@@ -1,0 +1,11 @@
+{
+  "runId": "2026-04-29T07-35-45",
+  "current": "__done__",
+  "data": {},
+  "retries": {},
+  "completedSteps": [
+    "greet",
+    "check",
+    "done"
+  ]
+}

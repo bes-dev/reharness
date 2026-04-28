@@ -1,0 +1,31 @@
+{
+  "name": "pi-fsm",
+  "version": "0.1.0",
+  "description": "Deterministic multi-agent pipeline framework for Pi coding agent",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "pi-fsm": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc && chmod +x dist/cli.js",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist",
+    "AGENTS.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@mariozechner/pi-tui": "^0.70.6",
+    "tsx": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}
