@@ -110,18 +110,87 @@ verify: {
 },
 ```
 
-### Branching state:
+### Branching (conditional path):
 ```typescript
 check: {
   entry: async (c) => {
-    if (existsSync(resolve(app, 'src/ui'))) return 'HAS_UI';
-    return 'NO_UI';
+    return existsSync(resolve(app, 'src/ui')) ? 'HAS_UI' : 'NO_UI';
+  },
+  on: { HAS_UI: 'build_ui', NO_UI: 'verify' },
+},
+```
+
+### Fan-out (independent agents on different files, converge at verify):
+```typescript
+// types is the contract — logic and ui implement against it independently
+types:  { entry: async (c) => { await c.agent('types', ...); },  on: 'logic' },
+logic:  { entry: async (c) => { await c.agent('logic', ...); },  on: 'ui' },     // src/services/, src/stores/
+ui:     { entry: async (c) => { await c.agent('ui', ...); },     on: 'verify' },  // src/components/, app/
+verify: { /* reads output from BOTH logic and ui */ },
+// logic and ui don't depend on each other — order doesn't matter for correctness
+// verify is the convergence point that checks everything
+```
+
+### Convergence loop (iterate until quality met):
+```typescript
+draft: {
+  entry: async (c) => { await c.agent('writer', ...); },
+  on: 'review',
+},
+review: {
+  entry: async (c) => {
+    const text = readFileSync(resolve(target, 'article.md'), 'utf-8');
+    if (text.split(/\s+/).length < 2000) return 'SHORT';
+    if (!/\[.*\]\(http/.test(text)) return 'NO_CITATIONS';
+    return 'GOOD';
   },
   on: {
-    HAS_UI: 'build_ui',
-    NO_UI: 'verify',
+    GOOD: 'done',
+    SHORT: [
+      { target: 'revise', guard: (c) => c.retries('review') < 3 },
+      { target: 'done' },  // accept as-is after 3 attempts
+    ],
+    NO_CITATIONS: [
+      { target: 'revise', guard: (c) => c.retries('review') < 3 },
+      { target: 'done' },
+    ],
   },
 },
+revise: {
+  entry: async (c) => {
+    c.retry('review');
+    await c.agent('reviser', `Improve: read review feedback in verify-report.md`);
+  },
+  on: 'review',
+},
+```
+
+### Fan-out → Aggregate (multiple perspectives, then synthesize):
+```typescript
+// Multiple reviewers examine code from different angles, aggregator synthesizes
+review_security: { entry: async (c) => { await c.agent('security-reviewer', ...); }, on: 'review_perf' },
+review_perf:     { entry: async (c) => { await c.agent('perf-reviewer', ...); },     on: 'review_style' },
+review_style:    { entry: async (c) => { await c.agent('style-reviewer', ...); },    on: 'aggregate' },
+aggregate: {
+  entry: async (c) => {
+    // Aggregator reads all review outputs and synthesizes
+    await c.agent('aggregator', `Read all reviews in ${target}/reviews/ and write final report`);
+  },
+  on: 'done',
+},
+```
+
+### Multi-stage verify (catch errors early):
+```typescript
+spec:        { entry: async (c) => { await c.agent('spec', ...); },     on: 'verify_spec' },
+verify_spec: {
+  entry: async (c) => {
+    return existsSync(resolve(app, 'spec.md')) ? 'PASS' : 'FAIL';
+  },
+  on: { PASS: 'implement', FAIL: 'error' },  // fail fast — don't waste tokens implementing bad spec
+},
+implement:      { entry: async (c) => { await c.agent('impl', ...); },  on: 'verify_impl' },
+verify_impl:    { /* full verify: compile, test, lint */ },
 ```
 
 ### Fix state with retry:
@@ -144,12 +213,7 @@ complete: { type: 'final', status: 'success', entry: async (c) => { c.emit('DONE
 error: { type: 'final', status: 'error' },
 ```
 
-### Transition shorthand:
-```typescript
-on: 'next_state'          // Equivalent to: on: { DONE: 'next_state' }
-```
-
-### Passing data between states:
+### Passing data / conditional guards:
 ```typescript
 analyze: {
   entry: async (c) => {

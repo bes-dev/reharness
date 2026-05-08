@@ -16,9 +16,9 @@ function gitAvailable(cwd: string): boolean {
 
 function gitSnapshot(cwd: string, message: string): string | null {
   try {
-    execSync("git add .reharness/", { cwd, stdio: "ignore" });
-    execSync(`git commit -m "${message}" --allow-empty`, { cwd, stdio: "ignore" });
-    return execSync("git rev-parse HEAD", { cwd, encoding: "utf-8" }).trim();
+    execSync("git add .reharness/", { cwd, stdio: "ignore", timeout: 30000 });
+    execSync(`git commit -m "${message}" --allow-empty`, { cwd, stdio: "ignore", timeout: 30000 });
+    return execSync("git rev-parse HEAD", { cwd, encoding: "utf-8", timeout: 10000 }).trim();
   } catch { return null; }
 }
 

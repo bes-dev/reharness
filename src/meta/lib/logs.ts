@@ -112,9 +112,9 @@ export function formatEvolutionInput(projectDir: string, logs: RunLog[]): string
 
   // List all .reharness files for context
   lines.push("## Current Pipeline Files\n");
-  const piFsmDir = resolve(projectDir, ".reharness");
-  if (existsSync(piFsmDir)) {
-    lines.push(listPiFsmFiles(piFsmDir));
+  const reharnessDir = resolve(projectDir, ".reharness");
+  if (existsSync(reharnessDir)) {
+    lines.push(listReharnessFiles(reharnessDir));
   } else {
     lines.push("No .reharness/ directory found.\n");
   }
@@ -141,14 +141,14 @@ function findLogDirs(projectDir: string): string[] {
   return dirs;
 }
 
-function listPiFsmFiles(dir: string, prefix = ""): string {
+function listReharnessFiles(dir: string, prefix = ""): string {
   const lines: string[] = [];
   try {
     for (const name of readdirSync(dir).sort()) {
       const full = resolve(dir, name);
       const rel = prefix ? `${prefix}/${name}` : name;
       if (existsSync(full) && statSync(full).isDirectory()) {
-        lines.push(...listPiFsmFiles(full, rel).split("\n").filter(Boolean));
+        lines.push(...listReharnessFiles(full, rel).split("\n").filter(Boolean));
       } else {
         lines.push(`- .reharness/${rel}`);
       }

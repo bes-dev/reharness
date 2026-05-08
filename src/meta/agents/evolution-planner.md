@@ -41,6 +41,26 @@ Content: Check for deprecated SafeAreaView import from 'react-native'
 Command: grep -rn "from 'react-native'" src/ | grep SafeAreaView
 ```
 
+### For CONTRACT_MISMATCH
+The fix goes at the ROOT CAUSE (upstream agent), not at the symptom (downstream agent). Two options:
+
+**Option A: Add gate state** — insert a code state between the two agents that validates the contract.
+```
+File: .reharness/commands/build.ts
+Action: ADD state "gate_spec" between "spec" and "implement"
+Content: code state that checks: spec.md exists, has required sections, types compile
+On FAIL: transition to error (don't waste tokens on implement with bad spec)
+```
+
+**Option B: Strengthen upstream prompt** — add explicit output rules to the producing agent.
+```
+File: .reharness/agents/skeleton.md
+Action: ADD rule
+Content: "Every entity in the PRD MUST have a corresponding .ts file in src/types/. Verify: ls src/types/ should match entity count."
+```
+
+Prefer Option A when the mismatch is structural (missing files, wrong format). Prefer Option B when the mismatch is content (missing fields, incomplete logic).
+
 ### For STRUCTURAL_ISSUE
 Modify the state graph. This is the most complex patch — requires updating:
 1. The state definition in commands/*.ts

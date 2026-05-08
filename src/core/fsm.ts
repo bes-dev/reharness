@@ -57,7 +57,7 @@ function resolveAgentsDir(agents: string | undefined, cwd: string): string {
 }
 
 function isFinal<C extends Record<string, any>>(state: StateDefinition<C>): state is FinalState<C> {
-  return "type" in state && (state as any).type === "final";
+  return "type" in state && (state as FinalState<C>).type === "final";
 }
 
 function resolveTransition<C extends Record<string, any>>(

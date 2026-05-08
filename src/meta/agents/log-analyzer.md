@@ -4,72 +4,100 @@ FIRST: Read the evolution input file (path in task). It contains run summaries, 
 
 THEN: Read ALL files in the project's `.reharness/` directory to understand the current pipeline structure.
 
-THEN: Produce a classification of every significant pattern.
+THEN: Produce TWO analyses: what went wrong (retrospective) and what will go wrong (prospective).
 
-## Classification Categories
+## Part 1: Retrospective Analysis
 
-For each pattern found, classify it as one of:
+For each pattern found in the logs, classify it:
 
-### 1. REPEATED_ERROR
-Same error appears across multiple runs or multiple retries within one run.
-- Evidence: error text appears in multiple verify reports or fix logs
-- Action: strengthen the agent prompt that causes this error, or add a verify check that catches it earlier
+### REPEATED_ERROR
+Same error across multiple runs or retries.
+- Evidence: error text in multiple verify reports or fix logs
+- Action: strengthen the agent prompt, or add verify check that catches it earlier
 
-### 2. SCAFFOLD_GAP
-An agent tried to use something that wasn't set up by scaffold (missing package, missing config, missing directory).
-- Evidence: fix agent logs show installing packages, creating configs, or making directories that should exist before agents run
-- Action: add the missing setup to scaffold code state
+### SCAFFOLD_GAP
+Agent tried to use something not set up by scaffold.
+- Evidence: fix logs show installing packages, creating configs, making directories
+- Action: add missing setup to scaffold code state
 
-### 3. VERIFY_GAP
-An error was NOT caught by verify but was found later (by fix agent, or caused cascading failures).
-- Evidence: verify passed but fix agent still needed, or error type not covered by any verify check
-- Action: add a new verify check
+### VERIFY_GAP
+Error NOT caught by verify but found later.
+- Evidence: verify passed but fix still needed, or error type not covered
+- Action: add new verify check
 
-### 4. PROMPT_WEAKNESS
-Agent produced incorrect output not because of missing knowledge, but because the prompt was ambiguous or missing a critical rule.
-- Evidence: fix agent repeatedly fixes the same kind of mistake from the same agent
-- Action: add explicit rule or anti-pattern to the agent prompt
+### PROMPT_WEAKNESS
+Agent produced incorrect output because prompt was ambiguous or missing a rule.
+- Evidence: fix agent repeatedly fixes same kind of mistake from same agent
+- Action: add explicit rule or anti-pattern to agent prompt
 
-### 5. STRUCTURAL_ISSUE
-The pipeline graph itself has a problem — wrong ordering, missing state, unnecessary state, or agents with overlapping responsibilities.
-- Evidence: consistent failures at a specific state transition, or fix agent changing files that belong to a different agent's scope
-- Action: modify the state graph (add/remove/reorder states, change transitions)
+### CONTRACT_MISMATCH
+One agent's output doesn't match what the next agent expects — schema mismatch, missing fields, wrong format.
+- Evidence: downstream agent fails because it can't find/parse what upstream agent produced. Fix agent patches the downstream code to handle the mismatch, but the root cause is upstream.
+- Action: add gate validation between the two agents (code state that checks output schema before next agent runs), OR strengthen the contract specification in the upstream agent's prompt
+- **Trace backwards**: don't just classify the symptom. Ask: which agent PRODUCED the bad output? That's where the fix belongs.
 
-### 6. NO_ACTION
-One-off error, environmental issue, or inherent complexity. Not worth patching.
-- Evidence: happened once, not reproducible, or would require subjective judgment to prevent
-- Action: document only
+### STRUCTURAL_ISSUE
+Pipeline graph problem — wrong ordering, missing state, overlapping agent responsibilities.
+- Evidence: consistent failures at specific transition, or fix agent changing files outside its agent's scope
+- Action: modify state graph
+
+### NO_ACTION
+One-off, environmental, or inherent complexity. Not worth patching.
+
+## Part 2: Prospective Analysis
+
+After reviewing what failed, think forward:
+
+**What scenarios has this pipeline NOT yet encountered that are likely to break it?**
+
+Consider:
+- What edge cases exist for this class of tasks? (empty input, very large input, unusual format, conflicting requirements)
+- What domain-specific gotchas hasn't the pipeline hit yet? (based on your understanding of the domain from reading the agent prompts)
+- What verify checks are missing? (errors that could happen but aren't being checked)
+- What agent prompt rules are missing? (anti-patterns that agents might fall into but haven't yet)
+
+For each predicted vulnerability:
+- **Scenario**: what would trigger it
+- **Likely symptom**: what would fail and how
+- **Preventive action**: rule to add to agent prompt, check to add to verify, or scaffold change
 
 ## Output Format
 
-Write to the file path specified in the task (evolution-plan.md) with this structure:
+Write to the file path specified in the task (evolution-plan.md):
 
 ```markdown
 # Evolution Plan
 
-## Patterns Found
+## Retrospective: Patterns from Logs
 
-### Pattern 1: [short description]
-- **Category**: REPEATED_ERROR | SCAFFOLD_GAP | VERIFY_GAP | PROMPT_WEAKNESS | STRUCTURAL_ISSUE | NO_ACTION
-- **Evidence**: [what in the logs supports this]
-- **Affected files**: [which .reharness/ files need changes]
-- **Proposed action**: [specific change to make]
+### Pattern 1: [description]
+- **Category**: REPEATED_ERROR | SCAFFOLD_GAP | VERIFY_GAP | PROMPT_WEAKNESS | CONTRACT_MISMATCH | STRUCTURAL_ISSUE | NO_ACTION
+- **Symptom**: [what failed — the observable error]
+- **Root cause**: [trace backwards — which agent/state CAUSED it, not just where it surfaced]
+- **Propagation**: [how did the error travel through the pipeline? e.g. "skeleton missed type → logic couldn't import → verify caught tsc error"]
+- **Evidence**: [from logs]
+- **Affected files**: [.reharness/ files — at the ROOT, not at the symptom]
+- **Proposed action**: [fix at the root cause, not at the symptom]
 
-### Pattern 2: ...
+## Prospective: Predicted Vulnerabilities
+
+### Vulnerability 1: [description]
+- **Scenario**: [what triggers it]
+- **Likely symptom**: [what fails]
+- **Preventive action**: [what to add/change]
 
 ## Cross-Pipeline Impact
-- [List which commands share affected agents/lib]
-- [Note if a change to one agent affects multiple commands]
+- [Which commands share affected agents/lib]
 
 ## Priority Order
-1. [Most impactful pattern to fix first]
-2. ...
+1. [Most impactful — retrospective first, then prospective]
 ```
 
 ## Rules
 
-- Read ALL log data before classifying — patterns emerge across runs, not within one
+- Read ALL log data before classifying — patterns emerge across runs
 - Be specific: "add rule X to agent Y" not "improve the prompt"
-- Check cross-pipeline impact: if agent fix.md is used by both /build and /improve, note both
-- Prefer NO_ACTION for one-off errors — don't over-patch
-- Maximum 10 patterns — prioritize by frequency and impact
+- Retrospective patterns always take priority over prospective predictions
+- Maximum 10 retrospective + 5 prospective patterns
+- Prefer NO_ACTION for one-off errors
+- For prospective analysis: only predict LIKELY vulnerabilities, not theoretical ones

@@ -17,7 +17,7 @@ export async function loadProject(startDir: string, extraCommands?: Record<strin
   let project: Project | null = null;
 
   if (existsSync(commandsDir) && statSync(commandsDir).isDirectory()) {
-    project = await loadFromPiFsmDir(startDir, commandsDir);
+    project = await loadFromReharnessDir(startDir, commandsDir);
   } else {
     for (const name of ["pipeline.ts", "pipeline.js"]) {
       const path = resolve(startDir, name);
@@ -45,7 +45,7 @@ export async function loadProject(startDir: string, extraCommands?: Record<strin
 
 // ── .reharness/ loader ────────────────────────────────────────────
 
-async function loadFromPiFsmDir(root: string, commandsDir: string): Promise<Project> {
+async function loadFromReharnessDir(root: string, commandsDir: string): Promise<Project> {
   const agentsDir = resolve(root, ".reharness", "agents");
   const commands: Record<string, CommandDefinition> = {};
 

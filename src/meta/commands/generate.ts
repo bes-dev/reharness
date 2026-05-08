@@ -38,8 +38,8 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
 
       if (!description) { console.error('Usage: /generate [output-dir] <description...>'); return null; }
 
-      const piFsmDir = resolve(target, '.reharness');
-      const genDir = resolve(piFsmDir, 'generate');
+      const reharnessDir = resolve(target, '.reharness');
+      const genDir = resolve(reharnessDir, 'generate');
       const errorsFile = resolve(genDir, 'verify-errors.md');
 
       return definePipeline({
@@ -112,11 +112,11 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
 
           generate_prompts: {
             entry: async (c) => {
-              mkdirSync(resolve(piFsmDir, 'agents'), { recursive: true });
+              mkdirSync(resolve(reharnessDir, 'agents'), { recursive: true });
               await c.agent('generate-prompts', [
                 `Generate agent prompt files for the pipeline.`,
                 `Read design: ${genDir}/design.md`,
-                `Write .md files to: ${piFsmDir}/agents/`,
+                `Write .md files to: ${reharnessDir}/agents/`,
               ].join('\n'));
             },
             on: 'generate_pipeline',
@@ -124,15 +124,30 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
 
           generate_pipeline: {
             entry: async (c) => {
-              mkdirSync(resolve(piFsmDir, 'commands'), { recursive: true });
-              mkdirSync(resolve(piFsmDir, 'lib'), { recursive: true });
+              mkdirSync(resolve(reharnessDir, 'commands'), { recursive: true });
+              mkdirSync(resolve(reharnessDir, 'lib'), { recursive: true });
               await c.agent('generate-pipeline', [
                 `Generate the pipeline TypeScript code.`,
                 `Read design: ${genDir}/design.md`,
-                `Read agent prompts: ${piFsmDir}/agents/`,
-                `Write commands to: ${piFsmDir}/commands/`,
-                `Write lib helpers to: ${piFsmDir}/lib/ (if needed)`,
+                `Read agent prompts: ${reharnessDir}/agents/`,
+                `Write commands to: ${reharnessDir}/commands/`,
+                `Write lib helpers to: ${reharnessDir}/lib/ (if needed)`,
               ].join('\n'));
+            },
+            on: 'optimize',
+          },
+
+          optimize: {
+            entry: async (c) => {
+              c.status('Optimizing pipeline...');
+              await c.agent('optimizer', [
+                `Optimize the generated pipeline by merging redundant agents and states.`,
+                `Read pipeline code: ${reharnessDir}/commands/`,
+                `Read agent prompts: ${reharnessDir}/agents/`,
+                `Read design: ${genDir}/design.md`,
+                `Write optimization report to: ${genDir}/optimization-report.md`,
+              ].join('\n'));
+              c.emit('✓ optimization pass');
             },
             on: 'verify',
           },
@@ -164,7 +179,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
                 `Fix errors in the generated pipeline.`,
                 `Read errors: ${errorsFile}`,
                 `Read design: ${genDir}/design.md`,
-                `Fix files in: ${piFsmDir}/`,
+                `Fix files in: ${reharnessDir}/`,
               ].join('\n'));
             },
             on: 'verify',

@@ -2,7 +2,7 @@
  * reharness TUI — built on @mariozechner/pi-tui.
  *
  * Layout:
- *   Header        "reharness v0.2.0"
+ *   Header        "reharness v0.3.0"
  *   PipelineView  step list with status icons + elapsed time
  *   LogView       scrollable log of emit messages
  *   Editor        multiline input with slash-command autocomplete
@@ -329,7 +329,7 @@ export async function startTui(project: Project, piModel?: string, extraCommands
   const tui = new TUI(terminal, true);
   let cmdCtx = buildCommandContext(currentProject);
 
-  const header = new Text(`${bold("reharness")} ${dim("v0.2.0")}`, 1, 0);
+  const header = new Text(`${bold("reharness")} ${dim("v0.3.0")}`, 1, 0);
   const pipelineView = new PipelineView(tui);
   const logView = new LogView();
   const statusLine = new StatusLine();

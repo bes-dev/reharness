@@ -19,7 +19,7 @@ function run(cmd: string, timeout = 300000): string {
 
 const server = new McpServer({
   name: "reharness",
-  version: "0.2.0",
+  version: "0.3.0",
 });
 
 server.tool(

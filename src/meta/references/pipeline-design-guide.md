@@ -40,65 +40,56 @@ Pipelines can accept model configuration from user input via `ctx.config` and ro
 - `definePipeline()` validates at definition time: all transition targets exist, initial state exists, at least one final state
 - State name typos caught immediately, not at runtime
 
-## Pipeline Topology Patterns
+## Deriving Pipeline Topology
 
-Choose the topology that fits the domain. Don't force every pipeline into the same shape.
+Don't pick a pattern from a menu. Analyze the task along 5 axes — the topology follows from the analysis.
 
-### 1. Linear with verify/fix loop
-The simplest and most common pattern. Good when work flows in one direction.
-```
-A → B → C → verify ↔ fix (max N) → done/error
-```
-Use when: steps are sequential, output of one feeds into the next.
+### Axis 1: Artifact structure — what is produced?
 
-### 2. Branching
-Different paths based on input or intermediate results.
-```
-analyze → { HAS_TESTS: test_first, NO_TESTS: generate_tests } → implement → verify
-```
-Use when: the pipeline needs to handle different starting conditions.
+| Structure | Topology implication |
+|---|---|
+| Single file (article, presentation, config) | Linear pipeline |
+| File tree with dependencies (types → impl → UI) | Fan-out: contract → independent branches → verify convergence |
+| Independent artifacts (multiple reviews, translations) | Fan-out → aggregate |
+| Layered artifacts (spec → design → code → tests) | Multi-stage with early verify between layers |
 
-### 3. Parallel decomposition (via separate states for independent work)
-When two agents work on different files with no dependency.
-```
-scaffold → spec → { types → logic, types → ui } → verify
-```
-In reharness this is modeled as sequential states but agents operate on non-overlapping files. True parallelism isn't built-in, but independence means order doesn't matter for correctness.
+### Axis 2: Verification nature — how is result checked?
 
-### 4. Iterative refinement
-A loop that improves output over multiple passes, not just fixes errors.
-```
-draft → review → { GOOD: done, NEEDS_WORK: refine → review }
-```
-Use when: quality is subjective and needs multiple iterations. The review state can use deterministic heuristics (word count, coverage) or interactive sessions.
+| Verification | Topology implication |
+|---|---|
+| Deterministic (compile, lint, schema validate) | Code verify state with verify/fix loop |
+| Heuristic (word count, coverage, structure checks) | Code verify with soft events (SHORT, NO_CITATIONS, GOOD) |
+| Subjective (quality, style, correctness) | Interactive checkpoint (`ctx.interactive`) or convergence loop |
+| None (pure creative output) | No verify/fix loop. Linear with optional human review |
 
-### 5. Multi-stage verify
-Different verification at different pipeline stages, not just at the end.
-```
-spec → verify_spec → implement → verify_impl → deploy → verify_deploy → done
-```
-Use when: catching errors early saves expensive downstream work.
+### Axis 3: Error recoverability — can errors be auto-fixed?
 
-### 6. Interactive checkpoints
-States where a human reviews and can modify artifacts before continuing.
-```
-research → outline → [INTERACTIVE: review_outline] → generate → verify → done
-```
-Uses `ctx.interactive()` — opens a tmux pane where user collaborates with agent. Pipeline blocks until session ends.
+| Recoverability | Topology implication |
+|---|---|
+| Syntax/structural errors | Fix agent + retry loop (max 3) |
+| Content gaps | Convergence loop: review → revise → review |
+| Design-level errors | Multi-stage verify: catch at spec stage before expensive implementation |
+| Unrecoverable | Fail fast to error state, no retry |
 
-### 7. Conditional components
-Not every run needs every state. Use events to skip optional states.
-```
-plan → scaffold → implement → { HAS_UI: build_ui, NO_UI: skip } → verify → done
-```
-Use when: the pipeline handles varied inputs (some apps need UI, some don't).
+### Axis 4: Expertise diversity — how many perspectives?
 
-### 8. Model routing
-Different agents get different models based on task complexity.
-```
-research (opus) → design (opus) → implement (sonnet) → verify → fix (haiku) → done
-```
-Use when: optimizing cost/quality tradeoff. Expensive models for creative/research work, cheap models for mechanical fixes. Models can come from user input via `ctx.config`.
+| Diversity | Topology implication |
+|---|---|
+| Single expertise | Single agent, linear |
+| Multiple expertise, different files | Fan-out: each agent works on its own files, converge at verify |
+| Multiple expertise, same artifact | Fan-out → aggregate: each reviews independently, aggregator synthesizes |
+| Opposing perspectives | Actor-critic / debate loop |
+
+### Axis 5: Instance variability — what changes between runs?
+
+| Variability | Topology implication |
+|---|---|
+| Structure constant, content varies | Scaffold (code state) + generate (agent states) |
+| Structure also varies | Planning state before scaffold to determine structure |
+| Fully dynamic | Branching/conditional states with guards |
+
+### Model routing
+Different agents can use different models via `{ model }` option. Expensive models for creative/research, cheap for mechanical fixes. Models from user input via `ctx.config`.
 
 ## Design Principles
 
@@ -110,6 +101,21 @@ When generating code or structured content, separate **specification** from **im
 
 This gives clear artifact boundaries and typed verification between layers. But it's a principle, not a rule — some domains don't need contracts (e.g. single-file generation).
 
+### Validate early, not just at the end
+The #1 root cause of agentic system failures is **Data Schema Mismatch** (28% of all faults) — when one agent's output doesn't match the next agent's expected input. These mismatches propagate through the pipeline and surface as cryptic errors in later states.
+
+**Don't wait for a final verify to catch this.** Add gate states between agent states:
+
+```
+spec → gate_spec → implement → gate_impl → ui → verify_all
+```
+
+Each gate is a cheap code state that checks: does the previous agent's output exist, is it valid, does it match the expected schema? If not, fail early — before the next agent wastes tokens on bad input.
+
+Gate checks are fast (file exists, JSON parses, key fields present, types compile). They catch 28% of all agentic failures at the point of origin, not after propagation.
+
+**Propagation rule:** errors introduced early surface as symptoms late. A missing type in skeleton → type error in logic → runtime crash in UI → verify catches it but fix agent doesn't know the root cause is in skeleton. Inter-state gates prevent this cascade.
+
 ### Agent granularity
 Split agents when they work on **different files** or need **different domain knowledge**. Don't split just for the sake of splitting.
 
@@ -118,8 +124,18 @@ Bad split: `header` agent + `footer` agent — same file, same knowledge, artifi
 
 A single agent that generates a 200-line HTML file is fine. Five agents each writing 40 lines of the same file is not.
 
-### Scaffold as code
-Project setup (create dirs, install deps, write config) should be a code state with `ctx.shell()` and `writeFileSync()`. Deterministic, fast, reproducible. Don't use an agent for what a shell script can do.
+### Code states — not just scaffold and verify
+Any step that is deterministic should be a code state, not an agent. Agents are expensive and non-deterministic — use them only when you need reasoning.
+
+Examples of code states:
+- **Scaffold**: create dirs, install deps, write config files
+- **Verify**: run tsc, lint, tests, check file existence
+- **Transform**: convert formats (CSV→JSON, merge files, run scripts)
+- **Package**: zip, build, deploy
+- **Gate**: check preconditions before expensive agent steps (does spec exist? does it compile?)
+- **Aggregate**: concatenate outputs from multiple agents into one file for the next state
+
+Rule of thumb: if you can write it as a shell command or a few lines of Node.js — code state. If it needs reasoning about content — agent state.
 
 ### Verification depth
 The verify state is the most important state in the pipeline. Bad verify = bad pipeline.
