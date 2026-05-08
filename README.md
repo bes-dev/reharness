@@ -128,6 +128,50 @@ Import paths:
 - `reharness/core` — FSM engine only
 - `reharness/meta` — generators only
 
+## Integrations
+
+Reharness works standalone via CLI, but also integrates into coding agents as a tool — letting them offload structured multi-step tasks into deterministic FSM pipelines.
+
+### MCP Server
+
+Works with Claude Code, Cursor, and any MCP-compatible client.
+
+```json
+// .mcp.json
+{
+  "mcpServers": {
+    "reharness": {
+      "command": "reharness-mcp"
+    }
+  }
+}
+```
+
+Exposes 5 tools: `reharness_generate`, `reharness_evolve`, `reharness_run`, `reharness_list`, `reharness_status`.
+
+### Claude Code Skills
+
+Copy skills to your project or globally:
+
+```bash
+cp -r integrations/claude-code/skills/* .claude/skills/
+```
+
+Three skills:
+- `/reharness-generate` — generate pipelines from natural language
+- `/reharness-evolve` — improve pipelines from run history
+- `/reharness` — auto-invoked by Claude when task is structured (FSM accelerator)
+
+### Pi Coding Agent
+
+Add reharness awareness to Pi's system prompt:
+
+```bash
+cat integrations/pi/reharness-tool.md >> ~/.pi/agent/system-prompt.md
+```
+
+Pi can then invoke `reharness generate/evolve/run` via bash tool when it recognizes a structured task.
+
 ## LLM Reference
 
 See [AGENTS.md](AGENTS.md) — documentation for LLMs creating commands, pipelines, and agent prompts.
