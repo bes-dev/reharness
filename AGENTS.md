@@ -1,6 +1,6 @@
-# pi-fsm — LLM Reference
+# reharness — LLM Reference
 
-You are working with pi-fsm, a finite state machine framework for multi-agent pipelines. It orchestrates Pi coding agents as states in an FSM with typed transitions, guards, and events.
+You are working with reharness, a finite state machine framework for multi-agent pipelines. It orchestrates Pi coding agents as states in an FSM with typed transitions, guards, and events.
 
 ## Core Concepts
 
@@ -12,13 +12,13 @@ You are working with pi-fsm, a finite state machine framework for multi-agent pi
 
 **Agent** — a Pi coding agent subprocess. Gets a markdown prompt (`.md`) and a task string. Runs autonomously with tools (read/write/edit/bash/grep/find).
 
-**Command** — user-facing entry point in `.pi-fsm/commands/`. Parses arguments, constructs a pipeline, returns it.
+**Command** — user-facing entry point in `.reharness/commands/`. Parses arguments, constructs a pipeline, returns it.
 
 ## Project Structure
 
 ```
 project/
-├── .pi-fsm/
+├── .reharness/
 │   ├── agents/           # Agent prompt files (.md)
 │   ├── commands/          # Each file = one slash command, auto-discovered
 │   └── lib/               # Shared code
@@ -28,12 +28,12 @@ project/
 ## Writing a Pipeline
 
 ```typescript
-import { definePipeline } from 'pi-fsm';
+import { definePipeline } from 'reharness';
 
 definePipeline({
   config: { slug, idea },
   initial: 'plan',           // Start state (must exist)
-  agents: ctx.agents,        // Optional, defaults to .pi-fsm/agents/
+  agents: ctx.agents,        // Optional, defaults to .reharness/agents/
 
   states: {
     // Linear state — do work, move on
@@ -156,8 +156,8 @@ Read-only pipeline config object.
 ## Writing Commands
 
 ```typescript
-// .pi-fsm/commands/build.ts
-import { defineCommand, definePipeline } from 'pi-fsm';
+// .reharness/commands/build.ts
+import { defineCommand, definePipeline } from 'reharness';
 
 export default defineCommand({
   description: 'Build a new app',
@@ -170,11 +170,11 @@ export default defineCommand({
 });
 ```
 
-`ctx` provides: `ctx.root` (project root), `ctx.agents` (.pi-fsm/agents/ path), `ctx.cwd`.
+`ctx` provides: `ctx.root` (project root), `ctx.agents` (.reharness/agents/ path), `ctx.cwd`.
 
 ## Writing Agent Prompts
 
-Files in `.pi-fsm/agents/<name>.md`. System prompt for autonomous Pi agent.
+Files in `.reharness/agents/<name>.md`. System prompt for autonomous Pi agent.
 
 Guidelines:
 - Keep focused — one agent, one job

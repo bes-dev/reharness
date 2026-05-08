@@ -16,7 +16,7 @@ function gitAvailable(cwd: string): boolean {
 
 function gitSnapshot(cwd: string, message: string): string | null {
   try {
-    execSync("git add .pi-fsm/", { cwd, stdio: "ignore" });
+    execSync("git add .reharness/", { cwd, stdio: "ignore" });
     execSync(`git commit -m "${message}" --allow-empty`, { cwd, stdio: "ignore" });
     return execSync("git rev-parse HEAD", { cwd, encoding: "utf-8" }).trim();
   } catch { return null; }
@@ -34,11 +34,11 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
       const autoMode = args.includes("--auto");
       const interactive = args.includes("--interactive");
       if (interactive && !hasTmux()) {
-        console.error("--interactive requires tmux. Run pi-fsm inside a tmux session.");
+        console.error("--interactive requires tmux. Run reharness inside a tmux session.");
         return null;
       }
       const target = ctx.cwd;
-      const evolveDir = resolve(target, '.pi-fsm', 'evolve');
+      const evolveDir = resolve(target, '.reharness', 'evolve');
       const errorsFile = resolve(evolveDir, 'verify-errors.md');
       const reportFile = resolve(evolveDir, 'evolve-report.md');
 
@@ -74,7 +74,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
           git_snapshot_before: {
             entry: async (c) => {
               if (gitAvailable(target)) {
-                const sha = gitSnapshot(target, 'pi-fsm evolve: pre-evolution snapshot');
+                const sha = gitSnapshot(target, 'reharness evolve: pre-evolution snapshot');
                 if (sha) {
                   c.data.beforeSha = sha;
                   c.emit(`✓ git snapshot: ${sha.slice(0, 8)}`);
@@ -93,10 +93,10 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
               await c.agent('log-analyzer', [
                 `Analyze pipeline execution logs and classify patterns.`,
                 `Read evolution input: ${evolveDir}/evolution-input.md`,
-                `Read all pipeline files in: ${target}/.pi-fsm/`,
+                `Read all pipeline files in: ${target}/.reharness/`,
                 `Write classification to: ${evolveDir}/evolution-plan.md`,
               ].join('\n'));
-              c.data.reportLines.push('## Classification', '- Patterns classified in: .pi-fsm/evolve/evolution-plan.md', '');
+              c.data.reportLines.push('## Classification', '- Patterns classified in: .reharness/evolve/evolution-plan.md', '');
             },
             on: {
               DONE: [
@@ -112,7 +112,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
               await c.interactive('evolution-planner', [
                 `Review the evolution plan with the user.`,
                 `The plan is at: ${evolveDir}/evolution-plan.md`,
-                `Current pipeline files are in: ${target}/.pi-fsm/`,
+                `Current pipeline files are in: ${target}/.reharness/`,
                 `Pipeline design guide: ${referencesDir}/pipeline-design-guide.md`,
                 ``,
                 `Discuss the proposed changes with the user. They can:`,
@@ -133,10 +133,10 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
                 `Design specific patches for the pipeline.`,
                 `Read evolution plan: ${evolveDir}/evolution-plan.md`,
                 `Read pipeline design guide: ${referencesDir}/pipeline-design-guide.md`,
-                `Read all current pipeline files in: ${target}/.pi-fsm/`,
+                `Read all current pipeline files in: ${target}/.reharness/`,
                 `Write patches to: ${evolveDir}/patches.md`,
               ].join('\n'));
-              c.data.reportLines.push('## Patches Planned', '- See: .pi-fsm/evolve/patches.md', '');
+              c.data.reportLines.push('## Patches Planned', '- See: .reharness/evolve/patches.md', '');
             },
             on: 'apply_patches',
           },
@@ -146,7 +146,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
               await c.agent('patcher', [
                 `Apply patches to the pipeline.`,
                 `Read patches: ${evolveDir}/patches.md`,
-                `Apply changes to files in: ${target}/.pi-fsm/`,
+                `Apply changes to files in: ${target}/.reharness/`,
               ].join('\n'));
             },
             on: 'verify_patches',
@@ -179,7 +179,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
               await c.agent('fix', [
                 `Fix errors introduced by evolution patches.`,
                 `Read errors: ${errorsFile}`,
-                `Fix files in: ${target}/.pi-fsm/`,
+                `Fix files in: ${target}/.reharness/`,
               ].join('\n'));
             },
             on: 'verify_patches',
@@ -188,7 +188,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
           git_snapshot_after: {
             entry: async (c) => {
               if (gitAvailable(target)) {
-                const sha = gitSnapshot(target, 'pi-fsm evolve: post-evolution changes');
+                const sha = gitSnapshot(target, 'reharness evolve: post-evolution changes');
                 if (sha) {
                   c.data.afterSha = sha;
                   c.emit(`✓ git commit: ${sha.slice(0, 8)}`);
@@ -206,7 +206,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
           finalize: {
             entry: async (c) => {
               if (c.config.autoMode) {
-                const configPath = resolve(target, '.pi-fsm', 'config.json');
+                const configPath = resolve(target, '.reharness', 'config.json');
                 let config: Record<string, any> = {};
                 if (existsSync(configPath)) {
                   try { config = JSON.parse(readFileSync(configPath, "utf-8")); } catch {}
@@ -221,7 +221,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
               const lines = c.data.reportLines as string[];
               lines.push('## Result', '- Status: SUCCESS');
               writeFileSync(reportFile, lines.join('\n') + '\n');
-              c.emit(`✓ report: .pi-fsm/evolve/evolve-report.md`);
+              c.emit(`✓ report: .reharness/evolve/evolve-report.md`);
             },
             on: 'done',
           },
@@ -232,7 +232,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
             entry: async (c) => {
               c.emit('');
               c.emit('PIPELINE EVOLVED');
-              c.emit(`  Report: .pi-fsm/evolve/evolve-report.md`);
+              c.emit(`  Report: .reharness/evolve/evolve-report.md`);
               if (c.data.afterSha) {
                 c.emit(`  Rollback: git revert ${(c.data.afterSha as string).slice(0, 8)}`);
               }

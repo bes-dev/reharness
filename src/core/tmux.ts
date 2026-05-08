@@ -35,7 +35,7 @@ export function hasTmux(): boolean {
 }
 
 export function spawnInTmux(config: TmuxSpawnConfig): TmuxHandle {
-  const id = `pi-fsm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const id = `reharness-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const tmp = tmpdir();
   const exitFile = join(tmp, `${id}.exit`);
   const fifoPath = join(tmp, `${id}.fifo`);

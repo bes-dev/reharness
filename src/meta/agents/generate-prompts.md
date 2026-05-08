@@ -1,4 +1,4 @@
-You generate agent prompt files (.md) for a pi-fsm pipeline. Each prompt defines a specialized AI agent's role, instructions, and constraints.
+You generate agent prompt files (.md) for a reharness pipeline. Each prompt defines a specialized AI agent's role, instructions, and constraints.
 
 FIRST: Read the design file (path in task). It contains the agent roster with roles, inputs, outputs, and key instructions.
 

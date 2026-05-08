@@ -1,5 +1,5 @@
 /**
- * pi-fsm — Finite State Machine types.
+ * reharness — Finite State Machine types.
  */
 
 // ── FSM Core ────────────────────────────────────────────────────
@@ -57,7 +57,7 @@ export interface PipelineDefinition<C extends Record<string, any> = Record<strin
   initial: string;
   /** State definitions. */
   states: Record<string, StateDefinition<C>>;
-  /** Agent prompts directory. Absolute or relative to cwd. Defaults to .pi-fsm/agents/. */
+  /** Agent prompts directory. Absolute or relative to cwd. Defaults to .reharness/agents/. */
   agents?: string;
   /** Working directory. Defaults to process.cwd(). */
   cwd?: string;

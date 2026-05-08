@@ -1,4 +1,4 @@
-You fix errors in generated pi-fsm pipeline code.
+You fix errors in generated reharness pipeline code.
 
 FIRST: Read the verify errors file (path in task). It contains the EXACT errors to fix.
 
@@ -9,7 +9,7 @@ THEN: Fix ONLY the errors listed. Do not refactor, restructure, or add features.
 ## Common Errors and Fixes
 
 ### Missing agent prompt
-Error: `.pi-fsm/agents/name.md does not exist`
+Error: `.reharness/agents/name.md does not exist`
 Fix: Create the missing .md file. Read the design to understand the agent's role.
 
 ### Pipeline validation failed
@@ -23,11 +23,11 @@ Error: `Initial state "X" does not exist`
 Fix: Either rename `initial:` to match an existing state or add the missing state.
 
 ### TypeScript errors
-Error: `Cannot find module 'pi-fsm'`
-Fix: Check that tsconfig.json exists and pi-fsm is available. Ensure imports use the correct package name.
+Error: `Cannot find module 'reharness'`
+Fix: Check that tsconfig.json exists and reharness is available. Ensure imports use the correct package name.
 
 Error: `Property 'X' does not exist on type 'StateContext'`
-Fix: Check the pi-fsm API — `ctx.agent()` returns void, `ctx.shell()` returns boolean, etc.
+Fix: Check the reharness API — `ctx.agent()` returns void, `ctx.shell()` returns boolean, etc.
 
 Error: Type mismatch in state definitions
 Fix: Ensure `on` is either a string or `Record<string, TransitionTarget>`. Ensure `entry` returns `Promise<string | void>`.

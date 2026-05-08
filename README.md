@@ -1,4 +1,4 @@
-# pi-fsm
+# reharness
 
 Deterministic multi-agent pipeline framework. Define pipelines as finite state machines — states, transitions, guards, events. Each state runs an LLM agent or deterministic code. Built-in meta-pipeline generates and evolves pipelines from natural language prompts.
 
@@ -6,25 +6,25 @@ Deterministic multi-agent pipeline framework. Define pipelines as finite state m
 
 ```bash
 # Generate a pipeline for any domain
-pi-fsm generate ./my-pipeline "Pipeline for generating React Native apps from a one-line idea"
+reharness generate ./my-pipeline "Pipeline for generating React Native apps from a one-line idea"
 
 # Or generate a command for an existing project
 cd my-project
-pi-fsm generate "Code review pipeline for this project"
+reharness generate "Code review pipeline for this project"
 
 # Run your pipelines
-pi-fsm              # Interactive TUI
-pi-fsm build myapp  # Direct command
+reharness              # Interactive TUI
+reharness build myapp  # Direct command
 
 # Improve pipelines from run history
-pi-fsm evolve
+reharness evolve
 ```
 
 ## Writing Pipelines
 
 ```typescript
-// .pi-fsm/commands/build.ts
-import { defineCommand, definePipeline } from 'pi-fsm';
+// .reharness/commands/build.ts
+import { defineCommand, definePipeline } from 'reharness';
 
 export default defineCommand({
   description: 'Build something',
@@ -59,7 +59,7 @@ export default defineCommand({
 
 ```
 my-project/
-├── .pi-fsm/
+├── .reharness/
 │   ├── agents/          # Agent prompt files (.md)
 │   ├── commands/        # One file per slash command (auto-discovered)
 │   └── lib/             # Shared code
@@ -85,8 +85,8 @@ ctx.data                                             // Shared state (persisted 
 
 ### `generate [dir] <description>`
 Generate a pipeline from a natural language prompt. Two modes:
-- **Standalone**: `pi-fsm generate ./output "Pipeline for..."` — creates new pipeline in a directory
-- **In-project**: `pi-fsm generate "Review command for this project"` — explores codebase, generates command in current `.pi-fsm/`
+- **Standalone**: `reharness generate ./output "Pipeline for..."` — creates new pipeline in a directory
+- **In-project**: `reharness generate "Review command for this project"` — explores codebase, generates command in current `.reharness/`
 
 ### `evolve [--auto] [--interactive]`
 Analyze run logs and improve the pipeline. Patches agent prompts, verify checks, scaffold, even the state graph.
@@ -98,10 +98,10 @@ Changes are git-versioned for easy rollback.
 ## CLI Options
 
 ```bash
-pi-fsm                          # Interactive TUI
-pi-fsm <command> [args...]      # Direct command
-pi-fsm --model <id>             # Override LLM model (e.g. anthropic/claude-sonnet-4-6)
-pi-fsm <command> --resume       # Resume interrupted pipeline
+reharness                          # Interactive TUI
+reharness <command> [args...]      # Direct command
+reharness --model <id>             # Override LLM model (e.g. anthropic/claude-sonnet-4-6)
+reharness <command> --resume       # Resume interrupted pipeline
 ```
 
 ## Architecture
@@ -113,7 +113,7 @@ src/
 │   ├── agent.ts       # LLM subprocess runner (Pi-compatible)
 │   ├── tmux.ts        # Tmux pane integration
 │   ├── tui-app.ts     # Interactive + direct TUI
-│   └── project.ts     # Auto-discover .pi-fsm/commands/
+│   └── project.ts     # Auto-discover .reharness/commands/
 │
 ├── meta/              # Pipeline generators (optional module)
 │   ├── commands/      # /generate, /evolve
@@ -124,9 +124,9 @@ src/
 ```
 
 Import paths:
-- `pi-fsm` — full package (core + meta)
-- `pi-fsm/core` — FSM engine only
-- `pi-fsm/meta` — generators only
+- `reharness` — full package (core + meta)
+- `reharness/core` — FSM engine only
+- `reharness/meta` — generators only
 
 ## LLM Reference
 

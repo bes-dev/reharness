@@ -1,9 +1,9 @@
-import { defineCommand, definePipeline } from 'pi-fsm';
+import { defineCommand, definePipeline } from 'reharness';
 
 export default defineCommand({
   description: 'Hello world — minimal pipeline demo',
   run: (_args, _ctx) => definePipeline({
-    config: { greeting: 'Hello from pi-fsm!' },
+    config: { greeting: 'Hello from reharness!' },
     initial: 'greet',
 
     states: {

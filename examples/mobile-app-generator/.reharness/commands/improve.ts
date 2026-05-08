@@ -1,4 +1,4 @@
-import { defineCommand, definePipeline } from 'pi-fsm';
+import { defineCommand, definePipeline } from 'reharness';
 import { execSync } from 'child_process';
 import { writeFileSync } from 'fs';
 import { resolve } from 'path';

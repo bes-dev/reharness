@@ -14,14 +14,14 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
   const referencesDir = resolve(metaDir, "references");
 
   return {
-    description: 'Generate a pi-fsm pipeline from a prompt',
+    description: 'Generate a reharness pipeline from a prompt',
     usage: '[output-dir] <description...>',
 
     run: (args, ctx) => {
       if (args.length === 0) { console.error('Usage: /generate [output-dir] <description...>'); return null; }
 
       // If first arg looks like a path → standalone mode (new dir)
-      // Otherwise → project mode (generate into current .pi-fsm/)
+      // Otherwise → project mode (generate into current .reharness/)
       let target: string;
       let description: string;
       let projectMode: boolean;
@@ -38,7 +38,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
 
       if (!description) { console.error('Usage: /generate [output-dir] <description...>'); return null; }
 
-      const piFsmDir = resolve(target, '.pi-fsm');
+      const piFsmDir = resolve(target, '.reharness');
       const genDir = resolve(piFsmDir, 'generate');
       const errorsFile = resolve(genDir, 'verify-errors.md');
 
@@ -177,10 +177,10 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
               c.emit('');
               if (c.config.projectMode) {
                 c.emit('COMMAND GENERATED');
-                c.emit('  pi-fsm    # see available commands');
+                c.emit('  reharness    # see available commands');
               } else {
                 c.emit('PIPELINE GENERATED');
-                c.emit(`  cd ${target} && pi-fsm`);
+                c.emit(`  cd ${target} && reharness`);
               }
             },
           },

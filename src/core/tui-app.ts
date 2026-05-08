@@ -1,8 +1,8 @@
 /**
- * pi-fsm TUI — built on @mariozechner/pi-tui.
+ * reharness TUI — built on @mariozechner/pi-tui.
  *
  * Layout:
- *   Header        "pi-fsm v0.2.0"
+ *   Header        "reharness v0.2.0"
  *   PipelineView  step list with status icons + elapsed time
  *   LogView       scrollable log of emit messages
  *   Editor        multiline input with slash-command autocomplete
@@ -288,7 +288,7 @@ function buildSlashCommands(project: Project): SlashCommand[] {
     cmds.push({ name, description: def.description, argumentHint: def.usage });
   }
   cmds.push({ name: "help", description: "Show available commands" });
-  cmds.push({ name: "quit", description: "Exit pi-fsm" });
+  cmds.push({ name: "quit", description: "Exit reharness" });
   return cmds;
 }
 
@@ -329,7 +329,7 @@ export async function startTui(project: Project, piModel?: string, extraCommands
   const tui = new TUI(terminal, true);
   let cmdCtx = buildCommandContext(currentProject);
 
-  const header = new Text(`${bold("pi-fsm")} ${dim("v0.2.0")}`, 1, 0);
+  const header = new Text(`${bold("reharness")} ${dim("v0.2.0")}`, 1, 0);
   const pipelineView = new PipelineView(tui);
   const logView = new LogView();
   const statusLine = new StatusLine();
@@ -521,7 +521,7 @@ export async function runDirect(project: Project, name: string, args: string[], 
   const logView = new LogView();
   const statusLine = new StatusLine();
 
-  tui.addChild(new Text(`${bold("pi-fsm")} ${dim(`/${name}`)} ${dim(cleanArgs.join(" "))}`, 1, 0));
+  tui.addChild(new Text(`${bold("reharness")} ${dim(`/${name}`)} ${dim(cleanArgs.join(" "))}`, 1, 0));
   tui.addChild(pipelineView);
   tui.addChild(logView);
   tui.addChild(statusLine);

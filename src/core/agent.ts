@@ -183,7 +183,7 @@ function runHeadless(binary: string, piArgs: string[], config: AgentRunConfig): 
  */
 export async function runInteractiveProcess(config: AgentRunConfig): Promise<void> {
   if (!hasTmux()) {
-    throw new Error("ctx.interactive() requires tmux. Run pi-fsm inside a tmux session.");
+    throw new Error("ctx.interactive() requires tmux. Run reharness inside a tmux session.");
   }
 
   const binary = config.piBinary || "pi";

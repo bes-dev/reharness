@@ -51,7 +51,7 @@ export function findResumableRun(logsDir: string): string | null {
 // ── Helpers ─────────────────────────────────────────────────────
 
 function resolveAgentsDir(agents: string | undefined, cwd: string): string {
-  if (!agents) return resolve(cwd, ".pi-fsm", "agents");
+  if (!agents) return resolve(cwd, ".reharness", "agents");
   if (isAbsolute(agents)) return agents;
   return resolve(cwd, agents);
 }

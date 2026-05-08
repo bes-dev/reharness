@@ -110,13 +110,13 @@ export function formatEvolutionInput(projectDir: string, logs: RunLog[]): string
     }
   }
 
-  // List all .pi-fsm files for context
+  // List all .reharness files for context
   lines.push("## Current Pipeline Files\n");
-  const piFsmDir = resolve(projectDir, ".pi-fsm");
+  const piFsmDir = resolve(projectDir, ".reharness");
   if (existsSync(piFsmDir)) {
     lines.push(listPiFsmFiles(piFsmDir));
   } else {
-    lines.push("No .pi-fsm/ directory found.\n");
+    lines.push("No .reharness/ directory found.\n");
   }
 
   return lines.join("\n");
@@ -150,7 +150,7 @@ function listPiFsmFiles(dir: string, prefix = ""): string {
       if (existsSync(full) && statSync(full).isDirectory()) {
         lines.push(...listPiFsmFiles(full, rel).split("\n").filter(Boolean));
       } else {
-        lines.push(`- .pi-fsm/${rel}`);
+        lines.push(`- .reharness/${rel}`);
       }
     }
   } catch {}

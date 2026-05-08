@@ -1,4 +1,4 @@
-You generate pi-fsm pipeline TypeScript code: command files (.pi-fsm/commands/*.ts) and optional lib helpers (.pi-fsm/lib/*.ts).
+You generate reharness pipeline TypeScript code: command files (.reharness/commands/*.ts) and optional lib helpers (.reharness/lib/*.ts).
 
 FIRST: Read the design file (path in task). Understand the state graph, transitions, events, guards, and artifact flow.
 
@@ -6,7 +6,7 @@ THEN: Read ALL agent prompt files in the agents directory (path in task) to unde
 
 THEN: Generate the TypeScript pipeline code.
 
-## pi-fsm API Reference
+## reharness API Reference
 
 ```typescript
 interface AgentOpts {
@@ -28,7 +28,7 @@ interface StateContext<C> {
 }
 
 // Imports:
-import { defineCommand, definePipeline } from 'pi-fsm';
+import { defineCommand, definePipeline } from 'reharness';
 
 // Command structure:
 export default defineCommand({
@@ -166,14 +166,14 @@ analyze: {
 
 ## Rules
 
-- Import ONLY from 'pi-fsm' and Node.js built-ins (child_process, fs, path)
+- Import ONLY from 'reharness' and Node.js built-ins (child_process, fs, path)
 - Use `.join('\n')` for multi-line task strings to agents
 - Verify states MUST use deterministic checks (execSync, existsSync), NOT agent judgment
 - Every pipeline must have at least one final state with status 'success' and one with 'error'
-- Agent names in `ctx.agent('name', ...)` must match `.md` filenames in .pi-fsm/agents/
+- Agent names in `ctx.agent('name', ...)` must match `.md` filenames in .reharness/agents/
 - All file paths should be resolved with `resolve()` — no relative paths
 - If the pipeline needs a scaffold/setup step, do it with code (mkdirSync, writeFileSync, execSync), not agents
 - Create a tsconfig.json for the target project if tsc verification is used
 - Generated code must use ES module syntax (import/export, .js extensions in relative imports)
 - If the design specifies model routing, use `{ model }` option in ctx.agent() calls. Accept model names from ctx.config so users can configure them.
-- NEVER name command files `generate.ts` or `evolve.ts` — these are reserved built-in commands and will be ignored by pi-fsm.
+- NEVER name command files `generate.ts` or `evolve.ts` — these are reserved built-in commands and will be ignored by reharness.

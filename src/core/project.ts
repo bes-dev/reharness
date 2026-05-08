@@ -1,8 +1,8 @@
 /**
- * Project discovery — finds .pi-fsm/ directory and loads commands.
+ * Project discovery — finds .reharness/ directory and loads commands.
  *
  * Discovery order:
- *   1. .pi-fsm/commands/*.ts  (new convention)
+ *   1. .reharness/commands/*.ts  (new convention)
  *   2. pipeline.ts            (legacy fallback)
  */
 
@@ -10,9 +10,9 @@ import { existsSync, readdirSync, statSync } from "fs";
 import { resolve, basename } from "path";
 import type { Project, CommandDefinition, Pipeline } from "./types.js";
 
-/** Discover a pi-fsm project from a starting directory. Extra commands are merged (e.g. from meta module). */
+/** Discover a reharness project from a starting directory. Extra commands are merged (e.g. from meta module). */
 export async function loadProject(startDir: string, extraCommands?: Record<string, CommandDefinition>): Promise<Project | null> {
-  const commandsDir = resolve(startDir, ".pi-fsm", "commands");
+  const commandsDir = resolve(startDir, ".reharness", "commands");
 
   let project: Project | null = null;
 
@@ -29,11 +29,11 @@ export async function loadProject(startDir: string, extraCommands?: Record<strin
   }
 
   if (extraCommands) {
-    if (!project) project = { root: startDir, agents: resolve(startDir, ".pi-fsm", "agents"), commands: {} };
+    if (!project) project = { root: startDir, agents: resolve(startDir, ".reharness", "agents"), commands: {} };
     const reserved = new Set(Object.keys(extraCommands));
     for (const name of reserved) {
       if (project.commands[name]) {
-        console.error(`⚠ "${name}" is a built-in command — skipping project's .pi-fsm/commands/${name}.ts`);
+        console.error(`⚠ "${name}" is a built-in command — skipping project's .reharness/commands/${name}.ts`);
         delete project.commands[name];
       }
     }
@@ -43,10 +43,10 @@ export async function loadProject(startDir: string, extraCommands?: Record<strin
   return project;
 }
 
-// ── .pi-fsm/ loader ────────────────────────────────────────────
+// ── .reharness/ loader ────────────────────────────────────────────
 
 async function loadFromPiFsmDir(root: string, commandsDir: string): Promise<Project> {
-  const agentsDir = resolve(root, ".pi-fsm", "agents");
+  const agentsDir = resolve(root, ".reharness", "agents");
   const commands: Record<string, CommandDefinition> = {};
 
   const files = readdirSync(commandsDir).filter((f) => f.endsWith(".ts") || f.endsWith(".js"));

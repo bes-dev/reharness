@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// Register tsx loader so we can import .ts files from .pi-fsm/commands/ and pipeline.ts
+// Register tsx loader so we can import .ts files from .reharness/commands/ and pipeline.ts
 import "tsx/esm";
 
 import { resolve, dirname } from "path";
@@ -40,7 +40,7 @@ async function main() {
 
   if (!project || Object.keys(project.commands).length === 0) {
     console.error("No commands available.");
-    console.error("Create .pi-fsm/commands/ or use built-in: pi-fsm generate <dir> <description>");
+    console.error("Create .reharness/commands/ or use built-in: reharness generate <dir> <description>");
     process.exit(1);
   }
 
@@ -56,17 +56,17 @@ async function main() {
 }
 
 function printUsage() {
-  console.log("pi-fsm — Deterministic multi-agent pipeline framework\n");
+  console.log("reharness — Deterministic multi-agent pipeline framework\n");
   console.log("Usage:");
-  console.log("  pi-fsm                        Interactive mode (TUI)");
-  console.log("  pi-fsm <command> [args...]     Run a command directly\n");
+  console.log("  reharness                        Interactive mode (TUI)");
+  console.log("  reharness <command> [args...]     Run a command directly\n");
   console.log("Built-in commands:");
   console.log("  generate [dir] <description>  Generate a pipeline (standalone or in-project)");
   console.log("  evolve [--auto] [--interactive] Analyze logs, improve pipeline\n");
   console.log("Project structure:");
-  console.log("  .pi-fsm/commands/             Command files (auto-discovered)");
-  console.log("  .pi-fsm/agents/               Agent prompts (.md)");
-  console.log("  .pi-fsm/lib/                  Shared code\n");
+  console.log("  .reharness/commands/             Command files (auto-discovered)");
+  console.log("  .reharness/agents/               Agent prompts (.md)");
+  console.log("  .reharness/lib/                  Shared code\n");
   console.log("Options:");
   console.log("  --model <id>      Pi model (e.g. anthropic/claude-sonnet-4-6)");
   console.log("  --help            Show this help");

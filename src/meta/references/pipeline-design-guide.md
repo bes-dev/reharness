@@ -1,8 +1,8 @@
 # Pipeline Design Guide
 
-Reference for designing pi-fsm pipelines. Read this before designing a state graph.
+Reference for designing reharness pipelines. Read this before designing a state graph.
 
-## pi-fsm Capabilities
+## reharness Capabilities
 
 ### States and transitions
 - **Active state**: has `entry()` that returns an event string (or void = `DONE`), plus `on` transitions
@@ -63,7 +63,7 @@ When two agents work on different files with no dependency.
 ```
 scaffold → spec → { types → logic, types → ui } → verify
 ```
-In pi-fsm this is modeled as sequential states but agents operate on non-overlapping files. True parallelism isn't built-in, but independence means order doesn't matter for correctness.
+In reharness this is modeled as sequential states but agents operate on non-overlapping files. True parallelism isn't built-in, but independence means order doesn't matter for correctness.
 
 ### 4. Iterative refinement
 A loop that improves output over multiple passes, not just fixes errors.

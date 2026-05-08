@@ -1,5 +1,5 @@
 /**
- * pi-fsm core: Deterministic multi-agent pipeline framework.
+ * reharness core: Deterministic multi-agent pipeline framework.
  */
 
 export { definePipeline, findResumableRun } from "./fsm.js";

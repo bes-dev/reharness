@@ -1,8 +1,8 @@
-You analyze execution logs from pi-fsm pipeline runs and produce a structured analysis of patterns, failures, and improvement opportunities.
+You analyze execution logs from reharness pipeline runs and produce a structured analysis of patterns, failures, and improvement opportunities.
 
 FIRST: Read the evolution input file (path in task). It contains run summaries, retry patterns, verify reports, and fix agent logs.
 
-THEN: Read ALL files in the project's `.pi-fsm/` directory to understand the current pipeline structure.
+THEN: Read ALL files in the project's `.reharness/` directory to understand the current pipeline structure.
 
 THEN: Produce a classification of every significant pattern.
 
@@ -52,7 +52,7 @@ Write to the file path specified in the task (evolution-plan.md) with this struc
 ### Pattern 1: [short description]
 - **Category**: REPEATED_ERROR | SCAFFOLD_GAP | VERIFY_GAP | PROMPT_WEAKNESS | STRUCTURAL_ISSUE | NO_ACTION
 - **Evidence**: [what in the logs supports this]
-- **Affected files**: [which .pi-fsm/ files need changes]
+- **Affected files**: [which .reharness/ files need changes]
 - **Proposed action**: [specific change to make]
 
 ### Pattern 2: ...

@@ -5,17 +5,17 @@ import { resolve } from "path";
 export function verifyGenerated(targetDir: string): string[] {
   const errors: string[] = [];
 
-  const commandsDir = resolve(targetDir, ".pi-fsm", "commands");
-  const agentsDir = resolve(targetDir, ".pi-fsm", "agents");
+  const commandsDir = resolve(targetDir, ".reharness", "commands");
+  const agentsDir = resolve(targetDir, ".reharness", "agents");
 
-  // 1. Check .pi-fsm/commands/ has at least one .ts file
+  // 1. Check .reharness/commands/ has at least one .ts file
   if (!existsSync(commandsDir)) {
-    errors.push("## Missing directory\n`.pi-fsm/commands/` does not exist");
+    errors.push("## Missing directory\n`.reharness/commands/` does not exist");
     return errors;
   }
   const commandFiles = readdirSync(commandsDir).filter(f => f.endsWith(".ts"));
   if (commandFiles.length === 0) {
-    errors.push("## No commands\nNo `.ts` files found in `.pi-fsm/commands/`");
+    errors.push("## No commands\nNo `.ts` files found in `.reharness/commands/`");
     return errors;
   }
 
@@ -27,12 +27,12 @@ export function verifyGenerated(targetDir: string): string[] {
       const refs = content.matchAll(/\.agent\s*\(\s*['"]([^'"]+)['"]/g);
       for (const match of refs) {
         if (!agentFiles.has(match[1])) {
-          errors.push(`## Missing agent prompt\n\`${cmdFile}\` references agent \`${match[1]}\` but \`.pi-fsm/agents/${match[1]}.md\` does not exist`);
+          errors.push(`## Missing agent prompt\n\`${cmdFile}\` references agent \`${match[1]}\` but \`.reharness/agents/${match[1]}.md\` does not exist`);
         }
       }
     }
   } else {
-    errors.push("## Missing directory\n`.pi-fsm/agents/` does not exist");
+    errors.push("## Missing directory\n`.reharness/agents/` does not exist");
   }
 
   // 3. Check TypeScript compiles

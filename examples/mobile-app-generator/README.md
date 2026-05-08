@@ -2,7 +2,7 @@
 
 Generate Expo React Native apps from a text description using a multi-agent pipeline.
 
-Built on [pi-fsm](../../README.md) — FSM orchestration, Pi agents for code generation.
+Built on [reharness](../../README.md) — FSM orchestration, Pi agents for code generation.
 
 ## Pipeline
 
@@ -27,8 +27,8 @@ scaffold → prd → skeleton → logic → ui → verify ↔ fix → complete
 
 ```bash
 cd examples/mobile-app-generator
-pi-fsm                           # Interactive TUI
-pi-fsm build feedwise "RSS reader with bookmarks"  # Direct
+reharness                           # Interactive TUI
+reharness build feedwise "RSS reader with bookmarks"  # Direct
 ```
 
 Commands:
@@ -48,7 +48,7 @@ cd apps/feedwise && npx expo start
 ## Project Structure
 
 ```
-.pi-fsm/
+.reharness/
 ├── agents/              # Agent prompts
 │   ├── prd.md           # PRD generation
 │   ├── skeleton.md      # Type-level API design

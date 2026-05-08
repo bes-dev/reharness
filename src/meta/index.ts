@@ -1,5 +1,5 @@
 /**
- * pi-fsm meta: Pipeline generators (generate, evolve, init).
+ * reharness meta: Pipeline generators (generate, evolve, init).
  */
 
 import type { CommandDefinition } from "../core/types.js";
