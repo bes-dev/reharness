@@ -10,22 +10,37 @@ import { existsSync, readdirSync, statSync } from "fs";
 import { resolve, basename } from "path";
 import type { Project, CommandDefinition, Pipeline } from "./types.js";
 
-/** Discover a pi-fsm project from a starting directory. */
-export async function loadProject(startDir: string): Promise<Project | null> {
+/** Discover a pi-fsm project from a starting directory. Extra commands are merged (e.g. from meta module). */
+export async function loadProject(startDir: string, extraCommands?: Record<string, CommandDefinition>): Promise<Project | null> {
   const commandsDir = resolve(startDir, ".pi-fsm", "commands");
 
-  if (existsSync(commandsDir) && statSync(commandsDir).isDirectory()) {
-    return loadFromPiFsmDir(startDir, commandsDir);
-  }
+  let project: Project | null = null;
 
-  for (const name of ["pipeline.ts", "pipeline.js"]) {
-    const path = resolve(startDir, name);
-    if (existsSync(path)) {
-      return loadFromPipelineFile(startDir, path);
+  if (existsSync(commandsDir) && statSync(commandsDir).isDirectory()) {
+    project = await loadFromPiFsmDir(startDir, commandsDir);
+  } else {
+    for (const name of ["pipeline.ts", "pipeline.js"]) {
+      const path = resolve(startDir, name);
+      if (existsSync(path)) {
+        project = await loadFromPipelineFile(startDir, path);
+        break;
+      }
     }
   }
 
-  return null;
+  if (extraCommands) {
+    if (!project) project = { root: startDir, agents: resolve(startDir, ".pi-fsm", "agents"), commands: {} };
+    const reserved = new Set(Object.keys(extraCommands));
+    for (const name of reserved) {
+      if (project.commands[name]) {
+        console.error(`⚠ "${name}" is a built-in command — skipping project's .pi-fsm/commands/${name}.ts`);
+        delete project.commands[name];
+      }
+    }
+    Object.assign(project.commands, extraCommands);
+  }
+
+  return project;
 }
 
 // ── .pi-fsm/ loader ────────────────────────────────────────────

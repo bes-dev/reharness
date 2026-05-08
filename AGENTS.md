@@ -110,16 +110,25 @@ on: {
 
 ## State Context API
 
-### `ctx.agent(name, task)`
+### `ctx.agent(name, task, opts?)`
 
-Run a Pi agent. `name` maps to `<agents>/<name>.md`.
+Run an LLM agent. `name` maps to `<agents>/<name>.md`. Returns void — agent output is files on disk.
 
 ```typescript
-const output = await ctx.agent('coder', `Implement apps/${slug}`);
+await ctx.agent('coder', `Implement apps/${slug}`);
+await ctx.agent('research', task, { model: 'anthropic/claude-opus-4-6' });  // per-agent model
 ```
 
 - Throws if prompt file doesn't exist or agent exits non-zero.
-- Returns agent's final text output.
+- Optional `{ model }` overrides the pipeline-level model for this call.
+
+### `ctx.interactive(name, task, opts?)`
+
+Run an interactive LLM session in a tmux pane. User can collaborate with the agent. Pipeline blocks until session ends. Requires tmux.
+
+```typescript
+await ctx.interactive('reviewer', 'Review the outline and suggest changes');
+```
 
 ### `ctx.shell(cmd, label?)`
 
@@ -260,3 +269,4 @@ Any command supports `--resume`. Pipeline saves state before each state transiti
 3. **Mutating ctx.config**: Config is shared by reference. Treat as read-only.
 4. **Agent task too vague**: Agents can't ask for clarification. Be specific — list files, constraints, commands.
 5. **Non-serializable ctx.data**: Functions or circular refs in `data` are silently dropped on save.
+6. **Reserved command names**: `generate` and `evolve` are built-in commands. Project commands with these names are ignored.

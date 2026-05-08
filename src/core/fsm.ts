@@ -5,7 +5,7 @@ import type {
   PipelineDefinition, StateContext, Pipeline, RunOptions,
   ActiveState, FinalState, StateDefinition, TransitionTarget, GuardedTransition,
 } from "./types.js";
-import { runAgentProcess } from "./agent.js";
+import { runAgentProcess, runInteractiveProcess } from "./agent.js";
 
 // ── State persistence ───────────────────────────────────────────
 
@@ -130,12 +130,12 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
   const logsDir = def.logsDir || resolve(cwd, "logs");
   const agentsDir = resolveAgentsDir(def.agents, cwd);
   const piBinary = def.piBinary || "pi";
-
   let stepCounter = 0;
 
   async function run(emit: (msg: string) => void, options?: RunOptions): Promise<"success" | "error"> {
     const signal = options?.signal;
     const onStatus = options?.onStatus || (() => {});
+    const piModel = options?.piModel || def.piModel;
     const retryCounts: Record<string, number> = {};
     let data = { ...(options?.data || {}) };
     let current = def.initial;
@@ -183,7 +183,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
       retry: (key) => { retryCounts[key] = (retryCounts[key] || 0) + 1; return retryCounts[key]; },
       retries: (key) => retryCounts[key] || 0,
 
-      agent: async (name, task) => {
+      agent: async (name, task, opts?) => {
         if (signal?.aborted) throw new Error("Aborted");
         const promptFile = resolve(agentsDir, `${name}.md`);
         if (!existsSync(promptFile)) throw new Error(`Agent prompt not found: ${promptFile}`);
@@ -194,12 +194,28 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
           prompt: promptFile, task, cwd,
           onLine: emit, onStatus,
           logFile: resolve(runDir, `${padded}-${name}.md`),
-          piBinary, signal,
+          piBinary, piModel: opts?.model || piModel, signal,
         });
         if (signal?.aborted) throw new Error("Aborted");
         if (r.exitCode !== 0) throw new Error(`Agent "${name}" failed (exit ${r.exitCode})`);
         emit(`✓ ${name}`);
-        return r.output;
+      },
+
+      interactive: async (name, task, opts?) => {
+        if (signal?.aborted) throw new Error("Aborted");
+        const promptFile = resolve(agentsDir, `${name}.md`);
+        if (!existsSync(promptFile)) throw new Error(`Agent prompt not found: ${promptFile}`);
+
+        stepCounter++;
+        const padded = String(stepCounter).padStart(2, "0");
+        await runInteractiveProcess({
+          prompt: promptFile, task, cwd,
+          onLine: emit, onStatus,
+          logFile: resolve(runDir, `${padded}-${name}-interactive.md`),
+          piBinary, piModel: opts?.model || piModel, signal,
+        });
+        if (signal?.aborted) throw new Error("Aborted");
+        emit(`✓ ${name} (interactive)`);
       },
 
       shell: (cmd, label?) => {

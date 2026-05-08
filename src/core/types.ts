@@ -65,6 +65,8 @@ export interface PipelineDefinition<C extends Record<string, any> = Record<strin
   logsDir?: string;
   /** Pi binary name. Defaults to "pi". */
   piBinary?: string;
+  /** Pi model specifier, e.g. "anthropic/claude-sonnet-4-6". Passed as --model to Pi. */
+  piModel?: string;
 }
 
 /** Options for pipeline.run(). */
@@ -73,6 +75,8 @@ export interface RunOptions {
   data?: Record<string, any>;
   signal?: AbortSignal;
   onStatus?: (text: string) => void;
+  /** Override Pi model at runtime (e.g. from CLI --model flag). Takes precedence over PipelineDefinition.piModel. */
+  piModel?: string;
 }
 
 /** A pipeline object returned by definePipeline. */
@@ -80,6 +84,12 @@ export interface Pipeline {
   run: (emit: (msg: string) => void, options?: RunOptions) => Promise<"success" | "error">;
   states: Record<string, StateDefinition>;
   config: Record<string, any>;
+}
+
+/** Per-agent options passed to ctx.agent() / ctx.interactive(). */
+export interface AgentOpts {
+  /** Override Pi model for this agent call (e.g. "anthropic/claude-haiku-4-5"). */
+  model?: string;
 }
 
 // ── State Context ───────────────────────────────────────────────
@@ -92,8 +102,10 @@ export interface StateContext<C extends Record<string, any> = Record<string, any
   emit: (msg: string) => void;
   /** Update the TUI status bar. */
   status: (text: string) => void;
-  /** Run a Pi agent by name. Returns agent's text output. Throws on failure. */
-  agent: (name: string, task: string) => Promise<string>;
+  /** Run a Pi agent by name. Throws on failure. */
+  agent: (name: string, task: string, opts?: AgentOpts) => Promise<void>;
+  /** Run an interactive Pi agent session in a tmux pane. Requires tmux. */
+  interactive: (name: string, task: string, opts?: AgentOpts) => Promise<void>;
   /** Run a shell command. Returns true on exit 0, false otherwise. Auto-emits ✓/✗. */
   shell: (cmd: string, label?: string) => boolean;
   /** Increment retry counter. Returns new count. */

@@ -1,10 +1,26 @@
 # pi-fsm
 
-Deterministic multi-agent pipeline framework for [Pi coding agent](https://github.com/badlogic/pi-mono).
-
-Define pipelines as finite state machines — states, transitions, guards, events. Each state runs a Pi agent (LLM with tools) or deterministic code. Full TUI with multiline editing, autocomplete, and abort. ~1300 lines, 2 dependencies.
+Deterministic multi-agent pipeline framework. Define pipelines as finite state machines — states, transitions, guards, events. Each state runs an LLM agent or deterministic code. Built-in meta-pipeline generates and evolves pipelines from natural language prompts.
 
 ## Quick Start
+
+```bash
+# Generate a pipeline for any domain
+pi-fsm generate ./my-pipeline "Pipeline for generating React Native apps from a one-line idea"
+
+# Or generate a command for an existing project
+cd my-project
+pi-fsm generate "Code review pipeline for this project"
+
+# Run your pipelines
+pi-fsm              # Interactive TUI
+pi-fsm build myapp  # Direct command
+
+# Improve pipelines from run history
+pi-fsm evolve
+```
+
+## Writing Pipelines
 
 ```typescript
 // .pi-fsm/commands/build.ts
@@ -39,11 +55,6 @@ export default defineCommand({
 });
 ```
 
-```bash
-pi-fsm              # Interactive TUI
-pi-fsm build myapp  # Direct command
-```
-
 ## Project Structure
 
 ```
@@ -52,119 +63,70 @@ my-project/
 │   ├── agents/          # Agent prompt files (.md)
 │   ├── commands/        # One file per slash command (auto-discovered)
 │   └── lib/             # Shared code
-└── output/
+└── ...
 ```
 
-## FSM API
-
-### `definePipeline(options)`
+## State Context (`ctx`)
 
 ```typescript
-definePipeline({
-  config: { ... },         // Available as ctx.config
-  initial: 'firstState',   // Start state
-  agents: ctx.agents,      // Agent prompts dir (optional, defaults to .pi-fsm/agents/)
-  cwd: ctx.cwd,            // Working directory (optional)
-  logsDir: './logs',       // Run logs (optional)
-
-  states: {
-    // Linear state — entry runs, then auto-transitions via DONE event
-    myState: {
-      entry: async (ctx) => { await ctx.agent('name', 'task'); },
-      on: 'nextState',  // shorthand for { DONE: 'nextState' }
-    },
-
-    // Branching state — entry returns event name
-    check: {
-      entry: async (ctx) => {
-        return ok ? 'PASS' : 'FAIL';  // event name (void = 'DONE')
-      },
-      on: {
-        PASS: 'success',
-        FAIL: [
-          { target: 'fix', guard: (ctx) => ctx.retries('k') < 3 },
-          { target: 'error' },  // fallback (no guard = always matches)
-        ],
-      },
-    },
-
-    // Final states — pipeline ends here
-    success: { type: 'final', status: 'success', entry: async (ctx) => { ctx.emit('Done!'); } },
-    error:   { type: 'final', status: 'error' },
-  },
-});
+await ctx.agent('name', 'task');                    // Run LLM agent (output = files on disk)
+await ctx.agent('name', 'task', { model: '...' });  // Override model per agent
+await ctx.interactive('name', 'task');               // Interactive session in tmux pane
+ctx.shell('cmd', 'label');                           // Shell command, returns boolean
+ctx.emit('message');                                 // Log to TUI
+ctx.status('text');                                  // Update TUI status bar
+ctx.retry('key');                                    // Increment retry counter
+ctx.retries('key');                                  // Read retry count
+ctx.config                                           // Pipeline config (read-only)
+ctx.data                                             // Shared state (persisted for resume)
 ```
 
-### Validation
+## Built-in Commands
 
-`definePipeline()` validates at definition time:
-- `initial` state exists
-- All transition targets reference existing states
-- At least one final state defined
+### `generate [dir] <description>`
+Generate a pipeline from a natural language prompt. Two modes:
+- **Standalone**: `pi-fsm generate ./output "Pipeline for..."` — creates new pipeline in a directory
+- **In-project**: `pi-fsm generate "Review command for this project"` — explores codebase, generates command in current `.pi-fsm/`
 
-Typos in state names throw immediately, not at runtime.
+### `evolve [--auto] [--interactive]`
+Analyze run logs and improve the pipeline. Patches agent prompts, verify checks, scaffold, even the state graph.
+- `--auto`: enable auto-evolution after every run
+- `--interactive`: review and approve changes in tmux session with agent
 
-### State Context (`ctx`)
+Changes are git-versioned for easy rollback.
 
-```typescript
-await ctx.agent('name', 'task');  // Run Pi agent, returns text output
-ctx.shell('cmd', 'label');        // Run shell, returns boolean, auto-emits ✓/✗
-ctx.emit('message');              // Log to TUI
-ctx.status('text');               // Update TUI status bar
-ctx.retry('key');                 // Increment retry counter
-ctx.retries('key');               // Read retry count
-ctx.config                        // Pipeline config (read-only)
-ctx.data                          // Shared state between states (persisted for resume)
-ctx.runDir                        // Current run log directory
-```
-
-### `defineCommand(options)`
-
-One file per command in `.pi-fsm/commands/`. Auto-discovered by filename.
-
-```typescript
-defineCommand({
-  description: string,
-  usage?: string,
-  run: (args, ctx) => Pipeline | null,
-})
-// ctx.root — project root
-// ctx.agents — resolved path to .pi-fsm/agents/
-// ctx.cwd — working directory
-```
-
-## TUI
-
-Interactive mode features:
-- Multiline editing (Shift+Enter), Emacs keybindings, history, undo
-- Tab autocomplete for `/commands`
-- Pipeline visualization: step status with ✓/✗/spinner + elapsed time
-- Status bar: model name, token count, key hints
-- Esc×2 or Ctrl+C to abort running pipeline (kills agent subprocess, saves state for resume)
-- Ctrl+C×2 to exit
-
-## Resume
+## CLI Options
 
 ```bash
-pi-fsm build myapp --resume     # Continues from last saved state
+pi-fsm                          # Interactive TUI
+pi-fsm <command> [args...]      # Direct command
+pi-fsm --model <id>             # Override LLM model (e.g. anthropic/claude-sonnet-4-6)
+pi-fsm <command> --resume       # Resume interrupted pipeline
 ```
 
 ## Architecture
 
 ```
-.pi-fsm/commands/     Your code: defineCommand → definePipeline
-.pi-fsm/agents/       Agent prompts (.md)
-.pi-fsm/lib/          Shared helpers
-
-pi-fsm (1335 lines, 2 deps)
-  ├── FSM engine      states → events → transitions → guards → final states
-  ├── Agent runner    spawn Pi subprocess, parse JSON events, track tokens
-  ├── Project loader  auto-discover .pi-fsm/commands/
-  └── TUI             pi-tui: differential rendering, editor, pipeline view
-
-Pi (vanilla)
-  └── LLM + tools (read/write/edit/bash/grep/find)
+src/
+├── core/              # FSM engine (standalone, no LLM dependency)
+│   ├── fsm.ts         # definePipeline, validation, run loop
+│   ├── agent.ts       # LLM subprocess runner (Pi-compatible)
+│   ├── tmux.ts        # Tmux pane integration
+│   ├── tui-app.ts     # Interactive + direct TUI
+│   └── project.ts     # Auto-discover .pi-fsm/commands/
+│
+├── meta/              # Pipeline generators (optional module)
+│   ├── commands/      # /generate, /evolve
+│   ├── agents/        # Meta-pipeline agent prompts
+│   └── references/    # Design guide for pipeline generation
+│
+└── cli.ts             # Entry point (loads core + meta)
 ```
+
+Import paths:
+- `pi-fsm` — full package (core + meta)
+- `pi-fsm/core` — FSM engine only
+- `pi-fsm/meta` — generators only
 
 ## LLM Reference
 

@@ -2,7 +2,7 @@
  * pi-fsm TUI — built on @mariozechner/pi-tui.
  *
  * Layout:
- *   Header        "pi-fsm v0.1.0"
+ *   Header        "pi-fsm v0.2.0"
  *   PipelineView  step list with status icons + elapsed time
  *   LogView       scrollable log of emit messages
  *   Editor        multiline input with slash-command autocomplete
@@ -23,8 +23,9 @@ import {
   type EditorTheme,
   type SelectListTheme,
 } from "@mariozechner/pi-tui";
-import type { Project, CommandContext } from "./types.js";
+import type { Project, CommandDefinition, CommandContext } from "./types.js";
 import { formatDuration } from "./ui.js";
+import { loadProject } from "./project.js";
 
 // ── ANSI helpers ────────────────────────────────────────────────
 
@@ -308,15 +309,27 @@ function createEmit(pipelineView: PipelineView, logView: LogView, tui: TUI) {
 
 // ── Interactive TUI ─────────────────────────────────────────────
 
-export async function startTui(project: Project) {
+export async function startTui(project: Project, piModel?: string, extraCommands?: Record<string, CommandDefinition>) {
   // Prevent default SIGINT handler — we handle Ctrl+C ourselves
   process.on("SIGINT", () => {});
 
+  let currentProject = project;
+
+  async function reloadProject() {
+    const reloaded = await loadProject(currentProject.root, extraCommands);
+    if (reloaded) {
+      currentProject = reloaded;
+      editor.setAutocompleteProvider(
+        new CombinedAutocompleteProvider(buildSlashCommands(currentProject), currentProject.root),
+      );
+    }
+  }
+
   const terminal = new ProcessTerminal();
   const tui = new TUI(terminal, true);
-  const cmdCtx = buildCommandContext(project);
+  let cmdCtx = buildCommandContext(currentProject);
 
-  const header = new Text(`${bold("pi-fsm")} ${dim("v0.1.0")}`, 1, 0);
+  const header = new Text(`${bold("pi-fsm")} ${dim("v0.2.0")}`, 1, 0);
   const pipelineView = new PipelineView(tui);
   const logView = new LogView();
   const statusLine = new StatusLine();
@@ -331,7 +344,7 @@ export async function startTui(project: Project) {
   tui.addChild(hintBar);
 
   editor.setAutocompleteProvider(
-    new CombinedAutocompleteProvider(buildSlashCommands(project), project.root),
+    new CombinedAutocompleteProvider(buildSlashCommands(currentProject), currentProject.root),
   );
 
   let running = false;
@@ -399,7 +412,7 @@ export async function startTui(project: Project) {
     if (input.startsWith("/")) input = input.slice(1);
 
     if (input === "help") {
-      showHelp(logView, project);
+      showHelp(logView, currentProject);
       tui.requestRender();
       return;
     }
@@ -420,7 +433,7 @@ export async function startTui(project: Project) {
   };
 
   async function handleCommand(name: string, args: string[]) {
-    const def = project.commands[name];
+    const def = currentProject.commands[name];
     if (!def) {
       logView.addLine(`${dim("Unknown command:")} ${name}`);
       tui.requestRender();
@@ -430,6 +443,7 @@ export async function startTui(project: Project) {
     const isResume = args.includes("--resume");
     const cleanArgs = args.filter(a => a !== "--resume");
 
+    cmdCtx = buildCommandContext(currentProject);
     const pipeline = def.run(cleanArgs, cmdCtx);
     if (!pipeline?.run) {
       logView.addLine(`${red("✗")} Command "${name}" did not return a pipeline`);
@@ -454,7 +468,7 @@ export async function startTui(project: Project) {
     };
 
     try {
-      const status = await pipeline.run(emit, { resume: isResume, signal: abortController.signal, onStatus });
+      const status = await pipeline.run(emit, { resume: isResume, signal: abortController.signal, onStatus, piModel });
       pipelineView.finish(status === "success");
       const elapsed = formatDuration(Date.now() - start);
       const result = status === "success" ? green(`✓ ${status}`) : red(`✗ ${status}`);
@@ -469,6 +483,10 @@ export async function startTui(project: Project) {
     editor.disableSubmit = false;
     hintBar.clearAll();
     hintBar.setDefault("Ctrl+C to exit · /help for commands · Tab to autocomplete");
+
+    // Reload project to pick up newly generated commands
+    await reloadProject();
+
     tui.requestRender();
   }
 
@@ -478,7 +496,7 @@ export async function startTui(project: Project) {
 
 // ── Direct (non-interactive) run ────────────────────────────────
 
-export async function runDirect(project: Project, name: string, args: string[]) {
+export async function runDirect(project: Project, name: string, args: string[], piModel?: string) {
   process.on("SIGINT", () => {});
   const isResume = args.includes("--resume");
   const cleanArgs = args.filter(a => a !== "--resume");
@@ -537,7 +555,7 @@ export async function runDirect(project: Project, name: string, args: string[]) 
   const onStatus = (text: string) => { hintBar.setStatus(text); tui.requestRender(); };
 
   try {
-    const status = await pipeline.run(emit, { resume: isResume, signal: ac.signal, onStatus });
+    const status = await pipeline.run(emit, { resume: isResume, signal: ac.signal, onStatus, piModel });
     pipelineView.finish(status === "success");
     statusLine.setText(`/${name} — ${status === "success" ? green("done") : red(status)} (${formatDuration(Date.now() - start)})`);
     tui.requestRender();
