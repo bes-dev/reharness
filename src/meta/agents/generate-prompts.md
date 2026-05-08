@@ -6,71 +6,85 @@ THEN: For each agent listed in the design, create a `.md` file in the agents dir
 
 ## Prompt Structure
 
-Every agent prompt MUST follow this pattern:
+Every agent prompt MUST contain these sections:
 
+### 1. Role + Core Principle
 ```markdown
 You [role description in one sentence].
 
-FIRST: [what to read — specific file paths from the artifact flow]
+**Core principle: [name it]** — [one sentence that captures the non-negotiable constraint for this agent. E.g. "Contract-First: types are the source of truth, implementation conforms to them." or "Minimum Viable Fix: fix only what's broken, never refactor."]
+```
 
-THEN: [what to do — ordered steps]
+### 2. Process (ordered steps with checkpoints)
+```markdown
+FIRST: [what to read — specific file paths]
 
-## [Domain section — tech stack, architecture, key patterns]
+THEN: [step 1 — do X]
+VERIFY: [quick check — does output exist? does it compile?]
 
-[Detailed instructions specific to this agent's domain]
+THEN: [step 2 — do Y]
+VERIFY: [quick check]
 
+THEN: [final step]
+```
+Don't just list tasks — define a SEQUENCE with verification between steps. The agent should never do 200 lines of work without checking something.
+
+### 3. Domain Knowledge
+```markdown
+## [Domain section]
+
+[Detailed patterns, code templates, architecture rules specific to this agent's domain. Be concrete — exact code snippets, naming conventions, file structures. Not "use good practices" but "use zustand create<StateType>()(persist(...))"]
+```
+
+### 4. Rationalizations Table
+```markdown
+## Common Rationalizations
+
+| Temptation | Why it's wrong |
+|---|---|
+| "[shortcut the agent will be tempted to take]" | "[concrete consequence of that shortcut]" |
+```
+4-6 rows, tuned to this agent's specific role. Think: what corners would an LLM cut? Preemptively push back. Examples:
+- For implementation agent: "I'll add mock data to test" → "Mock data masks integration bugs and violates the empty-start contract"
+- For fix agent: "I'll refactor while fixing" → "Mixed fixes and refactors make it impossible to verify the fix independently"
+- For spec agent: "I'll keep the spec brief" → "Vague specs produce vague implementations — next agent guesses instead of implements"
+
+### 5. Red Flags
+```markdown
+## Red Flags — you're going wrong if:
+
+- [concrete sign of going off track, specific to this role]
+- [another sign]
+```
+3-5 items. Not abstract ("be careful") but observable ("you've created 3+ files without running tsc", "you're modifying files outside your layer", "you're adding TODO comments instead of implementing").
+
+### 6. Verification Checklist
+```markdown
+## Done Checklist
+
+- [ ] [concrete check 1]
+- [ ] [concrete check 2]
+- [ ] [validation command passes]
+```
+The agent cannot claim "done" until every box is checked. Go beyond "tsc passes" — include domain-specific quality checks: "every MUST operation has a store method", "no files outside designated directories", "all imports resolve".
+
+### 7. Rules
+```markdown
 ## Rules
 
 - [Critical restrictions — what NOT to do]
 - [File scope — what files to touch vs leave alone]
-- [Validation — what command to run after finishing]
 ```
-
-## Reference Example
-
-Here is a well-structured agent prompt from an existing pipeline (mobile app generator):
-
-```markdown
-You design the type-level skeleton of an Expo React Native app: interfaces, store contracts, service signatures, and store stubs.
-
-Read the PRD first. Then create ALL files in this order:
-
-1. src/types/<entity>.ts — data interfaces + store contract interface
-2. src/services/<entity>Service.ts — function signatures with `throw "skeleton"` bodies
-3. src/stores/<entity>Store.ts — Zustand store with all methods as `throw "skeleton"` stubs
-
-This skeleton is the CONTRACT between logic and UI agents. Design it carefully.
-
-## Type files — the most important artifact
-
-Every store contract method MUST have JSDoc explaining:
-- What it does
-- Edge cases (empty input, duplicates, missing data)
-- Concurrency safety (can it be called twice simultaneously?)
-- Side effects (does it affect other stores?)
-
-## Rules
-
-- Every MUST operation from Entity-Action Matrix → method in store contract
-- Every WONT operation → NOT in store contract
-- Use `throw "skeleton"` for all function/method bodies
-- After creating all files, run: npx tsc --noEmit
-```
-
-Key patterns from this example:
-- Opens with clear role statement
-- Specifies exact file order and naming
-- Includes structural examples with code blocks
-- Rules section with MUST/MUST NOT
-- Ends with validation command
 
 ## Fix Agent
 
 ALWAYS generate a `fix.md` prompt. It must:
 - Read the verify report (exact file path from design)
 - Fix ONLY the errors listed — no refactoring
-- List common error patterns and their fixes
-- End with a validation command
+- Include error pattern → fix recipe table specific to the domain
+- Core principle: "Minimum Viable Fix"
+- Rationalization: "I'll improve this while I'm here" → "Your job is surgery, not architecture. Mixed changes are unverifiable."
+- End with validation command
 
 ## Rules
 
@@ -80,3 +94,4 @@ ALWAYS generate a `fix.md` prompt. It must:
 - Do NOT instruct agents to install packages unless the design explicitly requires it
 - Keep prompts focused — one agent, one responsibility
 - Prompts should be self-contained: an agent reading only its prompt + files on disk must be able to do its job
+- Rationalizations and red flags must be SPECIFIC to the agent's role, not generic platitudes
