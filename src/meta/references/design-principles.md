@@ -181,3 +181,39 @@ export default defineCommand({
 
 // Reserved command names: generate.ts, evolve.ts
 ```
+
+## Skeleton JSON format
+
+The skeleton agent outputs a JSON file that is compiled into TypeScript deterministically. No LLM interprets it.
+
+```json
+{
+  "id": "my-fsm",
+  "description": "What this FSM does",
+  "usage": "<query>",
+  "initial": "first_state",
+  "states": {
+    "first_state": {
+      "type": "agent",
+      "on": { "DONE": "next", "ERROR": "error" }
+    },
+    "check": {
+      "type": "code",
+      "on": {
+        "PASS": "done",
+        "FAIL": [
+          { "target": "fix", "guard": "retries:verify<3" },
+          { "target": "error" }
+        ]
+      }
+    },
+    "done": { "type": "final", "status": "success" },
+    "error": { "type": "final", "status": "error" }
+  }
+}
+```
+
+- `"agent"` states: AI agent, prompt = agents/<state-name>.md
+- `"code"` states: deterministic logic, function = lib/<id>-states.ts
+- `"final"` states: terminal, with `"status"`
+- Guards: `"retries:key<N"` → `c.retries('key') < N`
