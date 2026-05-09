@@ -1,7 +1,7 @@
 import { definePipeline } from "../../core/fsm.js";
 import { hasTmux } from "../../core/tmux.js";
 import type { CommandDefinition } from "../../core/types.js";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from "fs";
 import { resolve } from "path";
 import { writeInvestigationBrief } from "../lib/logs.js";
@@ -11,16 +11,16 @@ import { generateFromSkeleton } from "../lib/codegen.js";
 
 function gitAvailable(cwd: string): boolean {
   try {
-    execSync("git rev-parse --is-inside-work-tree", { cwd, stdio: "ignore" });
+    execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd, stdio: "ignore" });
     return true;
   } catch { return false; }
 }
 
 function gitSnapshot(cwd: string, message: string): string | null {
   try {
-    execSync("git add .reharness/", { cwd, stdio: "ignore", timeout: 30000 });
-    execSync(`git commit -m "${message}" --allow-empty`, { cwd, stdio: "ignore", timeout: 30000 });
-    return execSync("git rev-parse HEAD", { cwd, encoding: "utf-8", timeout: 10000 }).trim();
+    execFileSync("git", ["add", ".reharness/"], { cwd, stdio: "ignore", timeout: 30000 });
+    execFileSync("git", ["commit", "-m", message, "--allow-empty"], { cwd, stdio: "ignore", timeout: 30000 });
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf-8", timeout: 10000 }).trim();
   } catch { return null; }
 }
 

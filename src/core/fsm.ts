@@ -32,7 +32,7 @@ function saveState(runDir: string, state: FSMState): void {
 function loadState(runDir: string): FSMState | null {
   const path = stateFile(runDir);
   if (!existsSync(path)) return null;
-  try { return JSON.parse(readFileSync(path, "utf-8")); } catch { return null; }
+  try { return JSON.parse(readFileSync(path, "utf-8")); } catch { return null; /* corrupt or missing state file */ }
 }
 
 export function findResumableRun(logsDir: string): string | null {
@@ -44,7 +44,7 @@ export function findResumableRun(logsDir: string): string | null {
       const state = loadState(full);
       if (state && state.current !== "__done__") return full;
     }
-  } catch {}
+  } catch { /* unreadable logs directory */ }
   return null;
 }
 
@@ -254,7 +254,10 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
       // Final state
       if (isFinal(state)) {
         if (state.entry) {
-          try { await state.entry(ctx as StateContext<any>); } catch {}
+          try { await state.entry(ctx as StateContext<any>); } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            emit(`⚠ final state entry error: ${msg}`);
+          }
         }
         saveState(runDir, { runId, current: "__done__", data, retries: retryCounts });
         return state.status;

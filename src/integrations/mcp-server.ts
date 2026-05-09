@@ -2,18 +2,20 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { resolve } from "path";
 import { z } from "zod";
 
 const cwd = process.cwd();
 
-function run(cmd: string, timeout = 300000): string {
+/** Run reharness CLI safely — no shell interpolation. */
+function run(args: string[], timeout = 300000): string {
   try {
-    return execSync(cmd, { cwd, encoding: "utf-8", timeout, stdio: ["pipe", "pipe", "pipe"] });
-  } catch (err: any) {
-    return err.stdout || err.stderr || err.message;
+    return execFileSync("reharness", args, { cwd, encoding: "utf-8", timeout, stdio: ["pipe", "pipe", "pipe"] });
+  } catch (err: unknown) {
+    const e = err as { stdout?: string; stderr?: string; message?: string };
+    return e.stdout || e.stderr || e.message || "Unknown error";
   }
 }
 
@@ -24,67 +26,69 @@ const server = new McpServer({
 
 server.tool(
   "reharness_generate",
-  "Generate a reharness pipeline from a natural language description. Use outputDir for standalone pipelines (new directory), omit it to generate commands in the current project.",
+  "Generate a reharness FSM from a natural language description.",
   {
-    description: z.string().describe("What the pipeline should do"),
-    outputDir: z.string().optional().describe("Output directory for standalone pipeline (e.g. ./my-pipeline). Omit to generate in current project."),
-    model: z.string().optional().describe("LLM model to use (e.g. anthropic/claude-sonnet-4-6)"),
+    description: z.string().describe("What the FSM should do"),
+    outputDir: z.string().optional().describe("Output directory for standalone FSM"),
+    model: z.string().optional().describe("LLM model to use"),
   },
   async ({ description, outputDir, model }) => {
-    const args = outputDir ? `${outputDir} ${description}` : description;
-    const modelFlag = model ? ` --model ${model}` : "";
-    const output = run(`reharness generate ${args}${modelFlag}`);
+    const args = ["generate"];
+    if (outputDir) args.push(outputDir);
+    args.push(description);
+    if (model) args.push("--model", model);
+    const output = run(args);
     return { content: [{ type: "text" as const, text: output }] };
   },
 );
 
 server.tool(
   "reharness_evolve",
-  "Analyze pipeline run logs and improve the pipeline. Patches agent prompts, verify checks, scaffold, and state graph. Changes are git-versioned for rollback.",
+  "Investigate FSM runs and improve the machine. Changes are git-versioned for rollback.",
   {
-    auto: z.boolean().optional().describe("Enable auto-evolution after every future run"),
+    interactive: z.boolean().optional().describe("Interactive investigation in tmux"),
     model: z.string().optional().describe("LLM model to use"),
   },
-  async ({ auto, model }) => {
-    const flags = [auto ? "--auto" : "", model ? `--model ${model}` : ""].filter(Boolean).join(" ");
-    const output = run(`reharness evolve ${flags}`);
+  async ({ interactive, model }) => {
+    const args = ["evolve"];
+    if (interactive) args.push("--interactive");
+    if (model) args.push("--model", model);
+    const output = run(args);
     return { content: [{ type: "text" as const, text: output }] };
   },
 );
 
 server.tool(
   "reharness_run",
-  "Run a reharness pipeline command in the current project. Use reharness_list first to see available commands.",
+  "Run a reharness FSM command in the current project.",
   {
-    command: z.string().describe("Command name (e.g. build, review, test-gen)"),
+    command: z.string().describe("Command name"),
     args: z.array(z.string()).optional().describe("Arguments for the command"),
     model: z.string().optional().describe("LLM model to use"),
   },
-  async ({ command, args, model }) => {
-    const cmdArgs = args?.join(" ") || "";
-    const modelFlag = model ? ` --model ${model}` : "";
-    const output = run(`reharness ${command} ${cmdArgs}${modelFlag}`);
+  async ({ command, args: cmdArgs, model }) => {
+    const args = [command, ...(cmdArgs || [])];
+    if (model) args.push("--model", model);
+    const output = run(args);
     return { content: [{ type: "text" as const, text: output }] };
   },
 );
 
 server.tool(
   "reharness_list",
-  "List available reharness commands in the current project. Returns built-in commands (generate, evolve) plus project-specific commands from .reharness/commands/.",
+  "List available reharness commands in the current project.",
   {},
   async () => {
     const commands: Record<string, string> = {
-      generate: "Generate a reharness pipeline from a prompt",
-      evolve: "Analyze run logs and improve pipeline",
+      generate: "Generate a reharness FSM from a prompt",
+      evolve: "Investigate runs and improve FSM",
     };
 
     const commandsDir = resolve(cwd, ".reharness", "commands");
     if (existsSync(commandsDir)) {
       for (const file of readdirSync(commandsDir).filter(f => f.endsWith(".ts") || f.endsWith(".js"))) {
         const name = file.replace(/\.(ts|js)$/, "");
-        if (!commands[name]) {
-          commands[name] = `Project command: ${name}`;
-        }
+        if (!commands[name]) commands[name] = `Project command: ${name}`;
       }
     }
 
@@ -94,12 +98,11 @@ server.tool(
 
 server.tool(
   "reharness_status",
-  "Get the status of the last pipeline run in the current project. Shows completion state, retry counts, and any verify errors.",
+  "Get the status of the last FSM run in the current project.",
   {},
   async () => {
-    const result: Record<string, any> = { project: cwd, hasReharness: existsSync(resolve(cwd, ".reharness")) };
+    const result: Record<string, unknown> = { project: cwd, hasReharness: existsSync(resolve(cwd, ".reharness")) };
 
-    // Find latest run
     const logDirs = [resolve(cwd, "logs"), resolve(cwd, ".reharness", "logs")];
     for (const logDir of logDirs) {
       if (!existsSync(logDir)) continue;
@@ -117,15 +120,9 @@ server.tool(
             completed: state.current === "__done__",
             retries: state.retries,
           };
-        } catch {}
+        } catch { /* corrupt state.json */ }
       }
       break;
-    }
-
-    // Check for verify report
-    const reportPath = resolve(cwd, "verify-report.md");
-    if (existsSync(reportPath)) {
-      result.verifyReport = readFileSync(reportPath, "utf-8").slice(0, 2000);
     }
 
     return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };

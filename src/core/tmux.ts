@@ -40,11 +40,11 @@ function sq(s: string): string {
 }
 
 function safeUnlink(path: string) {
-  try { unlinkSync(path); } catch {}
+  try { unlinkSync(path); } catch { /* file already cleaned up */ }
 }
 
 function killPane(paneId: string) {
-  try { execSync(`tmux kill-pane -t ${sq(paneId)}`, { stdio: "ignore" }); } catch {}
+  try { execSync(`tmux kill-pane -t ${sq(paneId)}`, { stdio: "ignore" }); } catch { /* pane already closed */ }
 }
 
 export function spawnInTmux(config: TmuxSpawnConfig): TmuxHandle {
@@ -79,7 +79,7 @@ export function spawnInTmux(config: TmuxSpawnConfig): TmuxHandle {
     if (config.logFile) {
       try {
         execSync(`tmux pipe-pane -o -t ${sq(paneId)} ${sq(`cat >> ${config.logFile}`)}`, { stdio: "ignore" });
-      } catch {}
+      } catch { /* pipe-pane not critical — logging is best-effort */ }
     }
 
     const done = waitForSignal(signal, exitFile, paneId, config.signal);
@@ -152,7 +152,7 @@ function waitForSignal(
     proc.on("close", () => {
       abort?.removeEventListener("abort", onAbort);
       let exitCode = 1;
-      try { exitCode = parseInt(readFileSync(exitFile, "utf-8").trim(), 10) || 1; } catch {}
+      try { exitCode = parseInt(readFileSync(exitFile, "utf-8").trim(), 10) || 1; } catch { /* exit file missing — process was killed */ }
       finish(exitCode);
     });
   });
