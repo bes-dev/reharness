@@ -1,7 +1,7 @@
 import { execSync, spawn } from "child_process";
-import { createReadStream, mkdirSync, readFileSync, unlinkSync } from "fs";
+import { createReadStream, mkdirSync, readFileSync, unlinkSync, writeFileSync, chmodSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, dirname } from "path";
 import { Readable } from "stream";
 
 export interface TmuxSpawnConfig {
@@ -34,28 +34,44 @@ export function hasTmux(): boolean {
   return _hasTmux;
 }
 
+function writeScript(path: string, content: string) {
+  writeFileSync(path, content, { mode: 0o755 });
+}
+
 export function spawnInTmux(config: TmuxSpawnConfig): TmuxHandle {
   const id = `reharness-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const tmp = tmpdir();
   const exitFile = join(tmp, `${id}.exit`);
   const fifoPath = join(tmp, `${id}.fifo`);
+  const scriptFile = join(tmp, `${id}.sh`);
   const signal = `${id}-done`;
 
-  if (config.interactive) {
-    // Interactive: no JSON mode, user interacts directly in pane
-    const cmd = config.binary + " " + config.args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
-    const logArg = config.logFile ? ` ; tmux pipe-pane -t ${id} ''` : "";
-    const wrapper = `${cmd}; echo $? > '${exitFile}'${logArg}; tmux wait-for -S '${signal}'`;
+  // Write args to a JSON file so the script can read them without shell escaping
+  const argsFile = join(tmp, `${id}.args.json`);
+  writeFileSync(argsFile, JSON.stringify(config.args));
 
-    execSync(`tmux split-window -v -d -t '{last}' -P -F '#{pane_id}' '${wrapper.replace(/'/g, "'\\''")}'`, {
-      cwd: config.cwd,
-      encoding: "utf-8",
-    }).trim();
+  if (config.interactive) {
+    writeScript(scriptFile, [
+      `#!/usr/bin/env bash`,
+      `cd ${JSON.stringify(config.cwd)}`,
+      `ARGS=$(cat ${JSON.stringify(argsFile)})`,
+      `eval ${JSON.stringify(config.binary)} $(node -e "JSON.parse(require('fs').readFileSync('${argsFile}','utf8')).forEach(a=>process.stdout.write(JSON.stringify(a)+' '))")`,
+      `echo $? > ${JSON.stringify(exitFile)}`,
+      `tmux wait-for -S '${signal}'`,
+    ].join("\n"));
 
     if (config.logFile) {
-      mkdirSync(join(config.logFile, ".."), { recursive: true });
+      mkdirSync(dirname(config.logFile), { recursive: true });
+    }
+
+    execSync(`tmux split-window -v -d -t '{last}' ${JSON.stringify(scriptFile)}`, {
+      cwd: config.cwd,
+      encoding: "utf-8",
+    });
+
+    if (config.logFile) {
       try {
-        execSync(`tmux pipe-pane -o -t '{last}' "cat >> '${config.logFile}'"`, { stdio: "ignore" });
+        execSync(`tmux pipe-pane -o -t '{last}' "cat >> ${JSON.stringify(config.logFile)}"`, { stdio: "ignore" });
       } catch {}
     }
 
@@ -63,17 +79,22 @@ export function spawnInTmux(config: TmuxSpawnConfig): TmuxHandle {
     return {
       jsonStream: null,
       done,
-      cleanup: () => safeUnlink(exitFile),
+      cleanup: () => { safeUnlink(exitFile); safeUnlink(scriptFile); safeUnlink(argsFile); },
     };
   }
 
   // Headless-in-tmux: JSON mode with FIFO for parsing
-  execSync(`mkfifo '${fifoPath}'`);
+  execSync(`mkfifo ${JSON.stringify(fifoPath)}`);
 
-  const cmd = config.binary + " " + config.args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
-  const wrapper = `${cmd} | tee '${fifoPath}'; echo \${PIPESTATUS[0]} > '${exitFile}'; tmux wait-for -S '${signal}'`;
+  writeScript(scriptFile, [
+    `#!/usr/bin/env bash`,
+    `cd ${JSON.stringify(config.cwd)}`,
+    `${config.binary} $(node -e "JSON.parse(require('fs').readFileSync('${argsFile}','utf8')).forEach(a=>process.stdout.write(JSON.stringify(a)+' '))") | tee ${JSON.stringify(fifoPath)}`,
+    `echo \${PIPESTATUS[0]} > ${JSON.stringify(exitFile)}`,
+    `tmux wait-for -S '${signal}'`,
+  ].join("\n"));
 
-  execSync(`tmux split-window -v -d -t '{last}' '${wrapper.replace(/'/g, "'\\''")}'`, {
+  execSync(`tmux split-window -v -d -t '{last}' ${JSON.stringify(scriptFile)}`, {
     cwd: config.cwd,
     encoding: "utf-8",
   });
@@ -84,7 +105,7 @@ export function spawnInTmux(config: TmuxSpawnConfig): TmuxHandle {
   return {
     jsonStream,
     done,
-    cleanup: () => { safeUnlink(fifoPath); safeUnlink(exitFile); },
+    cleanup: () => { safeUnlink(fifoPath); safeUnlink(exitFile); safeUnlink(scriptFile); safeUnlink(argsFile); },
   };
 }
 
