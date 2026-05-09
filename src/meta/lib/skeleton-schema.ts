@@ -23,6 +23,7 @@ export function validateSkeleton(skeleton: SkeletonJSON): string[] {
 
   if (!skeleton.id) errors.push("Missing 'id'");
   if (!skeleton.description) errors.push("Missing 'description'");
+  if (!skeleton.usage) errors.push("Missing 'usage'");
   if (!skeleton.initial) errors.push("Missing 'initial'");
   if (!stateNames.has(skeleton.initial)) errors.push(`Initial state '${skeleton.initial}' does not exist`);
 

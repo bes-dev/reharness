@@ -102,7 +102,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
                 return 'SKIP';
               }
               const content = readFileSync(patchesFile, 'utf-8');
-              if (content.includes('No changes needed') || content.includes('No Changes Needed')) {
+              if (content.toLowerCase().includes('no changes needed')) {
                 c.emit('No changes needed.');
                 return 'SKIP';
               }

@@ -29,7 +29,7 @@ export function verifyGenerated(targetDir: string): string[] {
       const content = readFileSync(resolve(commandsDir, cmdFile), "utf-8");
       const refs = content.matchAll(/\.agent\s*\(\s*['"]([^'"]+)['"]/g);
       for (const match of refs) {
-        if (!agentFiles.has(match[1])) {
+        if (match[1] && !agentFiles.has(match[1])) {
           errors.push(`## Missing agent prompt\n\`${cmdFile}\` references agent \`${match[1]}\` but \`.reharness/agents/${match[1]}.md\` does not exist`);
         }
       }
