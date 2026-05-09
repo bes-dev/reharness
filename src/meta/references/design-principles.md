@@ -92,7 +92,7 @@ check_input: {
 
 ### Step 5: Where does the user need to intervene?
 
-If the user should review or modify intermediate output, use `ctx.interactive()` — an interactive session in tmux where the user collaborates with an agent. Falls back to headless agent without tmux.
+If the user should review or modify intermediate output, use `ctx.interactive()` — runs the agent with the same task, allowing interactive collaboration.
 
 ```
 draft → interactive_review → {APPROVED: finalize, REVISE: draft}

@@ -4,7 +4,6 @@
 
 export { definePipeline, findResumableRun } from "./fsm.js";
 export { runAgentProcess, runInteractiveProcess } from "./agent.js";
-export { hasTmux } from "./tmux.js";
 export { loadProject } from "./project.js";
 export { startTui, runDirect } from "./tui-app.js";
 export { formatDuration } from "./ui.js";

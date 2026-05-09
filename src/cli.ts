@@ -62,7 +62,7 @@ function printUsage() {
   console.log("  reharness <command> [args...]     Run a command directly\n");
   console.log("Built-in commands:");
   console.log("  generate [dir] <description>  Generate an FSM (standalone or in-project)");
-  console.log("  evolve [--auto] [--interactive] Analyze logs, improve FSM\n");
+  console.log("  evolve [--interactive]         Investigate runs, improve FSM\n");
   console.log("Project structure:");
   console.log("  .reharness/commands/             Command files (auto-discovered)");
   console.log("  .reharness/agents/               Agent prompts (.md)");

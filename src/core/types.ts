@@ -104,7 +104,7 @@ export interface StateContext<C extends Record<string, any> = Record<string, any
   status: (text: string) => void;
   /** Run a Pi agent by name. Throws on failure. */
   agent: (name: string, task: string, opts?: AgentOpts) => Promise<void>;
-  /** Run an interactive Pi agent session in a tmux pane. Requires tmux. */
+  /** Run an interactive Pi agent session. Falls back to headless. */
   interactive: (name: string, task: string, opts?: AgentOpts) => Promise<void>;
   /** Run a shell command. Returns true on exit 0, false otherwise. Auto-emits ✓/✗. */
   shell: (cmd: string, label?: string) => boolean;

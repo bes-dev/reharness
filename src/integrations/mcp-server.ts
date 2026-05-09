@@ -46,7 +46,7 @@ server.tool(
   "reharness_evolve",
   "Investigate FSM runs and improve the machine. Changes are git-versioned for rollback.",
   {
-    interactive: z.boolean().optional().describe("Interactive investigation in tmux"),
+    interactive: z.boolean().optional().describe("Interactive investigation mode"),
     model: z.string().optional().describe("LLM model to use"),
   },
   async ({ interactive, model }) => {

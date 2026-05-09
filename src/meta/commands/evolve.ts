@@ -1,5 +1,4 @@
 import { definePipeline } from "../../core/fsm.js";
-import { hasTmux } from "../../core/tmux.js";
 import type { CommandDefinition } from "../../core/types.js";
 import { execFileSync } from "child_process";
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from "fs";
@@ -34,10 +33,6 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
 
     run: (args, ctx) => {
       const interactive = args.includes("--interactive");
-      if (interactive && !hasTmux()) {
-        console.error("--interactive requires tmux.");
-        return null;
-      }
       const target = ctx.cwd;
       const reharnessDir = resolve(target, '.reharness');
       const evolveDir = resolve(reharnessDir, 'evolve');

@@ -1,8 +1,7 @@
 import { spawn } from "child_process";
 import { appendFileSync, mkdirSync, writeFileSync } from "fs";
-import { basename, dirname } from "path";
+import { dirname } from "path";
 import { Readable } from "stream";
-import { hasTmux, spawnInTmux } from "./tmux.js";
 
 export interface AgentRunConfig {
   prompt: string;
@@ -29,10 +28,7 @@ interface ParseCallbacks {
   logFile?: string;
 }
 
-/**
- * Parse Pi's JSON event stream from any readable stream.
- * Reused for both direct subprocess stdout and tmux FIFO.
- */
+/** Parse Pi's JSON event stream from a readable stream. */
 export function parseJsonEventStream(stream: Readable, cb: ParseCallbacks): Promise<{ model?: string; tokensIn: number; tokensOut: number }> {
   return new Promise((resolve) => {
     let model: string | undefined;
@@ -83,7 +79,7 @@ export function parseJsonEventStream(stream: Readable, cb: ParseCallbacks): Prom
             const errText = e.result?.content?.[0]?.text || "";
             if (errText) appendFileSync(cb.logFile, `[error] ${e.toolName}: ${errText.slice(0, 500)}\n\n`);
           }
-        } catch {}
+        } catch { /* non-JSON line from Pi — skip */ }
       }
     });
 
@@ -92,10 +88,7 @@ export function parseJsonEventStream(stream: Readable, cb: ParseCallbacks): Prom
   });
 }
 
-/**
- * Run a Pi agent as a subprocess.
- * Uses tmux pane when available (visible output), falls back to headless.
- */
+/** Run a Pi agent as a headless subprocess. */
 export async function runAgentProcess(config: AgentRunConfig): Promise<AgentRunResult> {
   const binary = config.piBinary || "pi";
 
@@ -112,34 +105,6 @@ export async function runAgentProcess(config: AgentRunConfig): Promise<AgentRunR
   if (config.piModel) piArgs.push("--model", config.piModel);
   piArgs.push("--system-prompt", config.prompt, config.task);
 
-  if (hasTmux()) {
-    return runViaTmux(binary, piArgs, config);
-  }
-  return runHeadless(binary, piArgs, config);
-}
-
-async function runViaTmux(binary: string, piArgs: string[], config: AgentRunConfig): Promise<AgentRunResult> {
-  const handle = spawnInTmux({
-    binary, args: piArgs, cwd: config.cwd,
-    name: basename(config.prompt, ".md"), signal: config.signal,
-  });
-
-  const parsed = handle.jsonStream
-    ? await parseJsonEventStream(handle.jsonStream, config)
-    : { model: undefined, tokensIn: 0, tokensOut: 0 };
-
-  const { exitCode } = await handle.done;
-  handle.cleanup();
-
-  if (config.logFile) appendFileSync(config.logFile, `\n[exit] code=${exitCode}\n`);
-  if (exitCode !== 0) {
-    config.onLine?.(`  exit code ${exitCode}`);
-  }
-
-  return { exitCode, ...parsed };
-}
-
-function runHeadless(binary: string, piArgs: string[], config: AgentRunConfig): Promise<AgentRunResult> {
   return new Promise((res, rej) => {
     const proc = spawn(binary, piArgs, {
       cwd: config.cwd,
@@ -178,39 +143,10 @@ function runHeadless(binary: string, piArgs: string[], config: AgentRunConfig): 
 }
 
 /**
- * Run an interactive Pi session in a tmux pane.
- * User can interact with the agent directly. Requires tmux.
+ * Run an "interactive" agent session. Currently runs as headless agent
+ * (interactive tmux support removed). The agent runs with full tools
+ * and writes results to disk like any other agent.
  */
 export async function runInteractiveProcess(config: AgentRunConfig): Promise<void> {
-  if (!hasTmux()) {
-    // Fallback: run as headless agent when tmux is not available
-    config.onLine?.("⚠ tmux not available — running as non-interactive agent");
-    await runAgentProcess(config);
-    return;
-  }
-
-  const binary = config.piBinary || "pi";
-
-  if (config.logFile) {
-    mkdirSync(dirname(config.logFile), { recursive: true });
-    writeFileSync(config.logFile, `# Interactive: ${config.prompt}\n# Task:\n${config.task}\n\n---\n\n`);
-  }
-
-  const handle = spawnInTmux({
-    binary,
-    args: [...(config.piModel ? ["--model", config.piModel] : []), "--system-prompt", config.prompt, config.task],
-    cwd: config.cwd,
-    name: basename(config.prompt, ".md"),
-    logFile: config.logFile,
-    interactive: true,
-    signal: config.signal,
-  });
-
-  const { exitCode } = await handle.done;
-  handle.cleanup();
-
-  if (config.logFile) appendFileSync(config.logFile, `\n[exit] code=${exitCode}\n`);
-  if (exitCode !== 0) {
-    throw new Error(`Interactive session failed (exit ${exitCode})`);
-  }
+  await runAgentProcess(config);
 }
