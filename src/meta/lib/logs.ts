@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync, statSync } from "fs";
 import { resolve } from "path";
 
 export interface RunLog {
@@ -139,6 +139,60 @@ function findLogDirs(projectDir: string): string[] {
   } catch {}
 
   return dirs;
+}
+
+/**
+ * Write a minimal investigation brief: paths and status, not analysis.
+ * The investigator agent reads raw data from these paths.
+ */
+export function writeInvestigationBrief(projectDir: string, outputPath: string): number {
+  const lines: string[] = ["# Investigation Brief\n"];
+  lines.push(`## Project: ${projectDir}`);
+
+  const reharnessDir = resolve(projectDir, ".reharness");
+  lines.push(`## .reharness/: ${existsSync(reharnessDir) ? "exists" : "MISSING"}\n`);
+
+  // Find all run logs
+  const logDirs = findLogDirs(projectDir);
+  let runCount = 0;
+
+  lines.push("## Run Logs\n");
+  for (const logsDir of logDirs) {
+    const runs = readdirSync(logsDir).filter(d => d.startsWith("run-")).sort().reverse();
+    for (const runDir of runs) {
+      const full = resolve(logsDir, runDir);
+      const statePath = resolve(full, "state.json");
+      if (!existsSync(statePath)) continue;
+      runCount++;
+      try {
+        const state = JSON.parse(readFileSync(statePath, "utf-8"));
+        const completed = state.current === "__done__";
+        lines.push(`### ${runDir}`);
+        lines.push(`- Path: ${full}`);
+        lines.push(`- State: ${state.current} ${completed ? "(completed)" : "(NOT completed)"}`);
+        lines.push(`- Retries: ${JSON.stringify(state.retries || {})}`);
+
+        // List agent log files
+        const logFiles = readdirSync(full).filter(f => f.endsWith(".md")).sort();
+        if (logFiles.length) lines.push(`- Agent logs: ${logFiles.join(", ")}`);
+        lines.push("");
+      } catch {}
+    }
+  }
+
+  if (runCount === 0) {
+    lines.push("No run logs found.\n");
+  }
+
+  // List .reharness files for reference
+  if (existsSync(reharnessDir)) {
+    lines.push("## .reharness/ Files\n");
+    lines.push(listReharnessFiles(reharnessDir));
+    lines.push("");
+  }
+
+  writeFileSync(outputPath, lines.join("\n"));
+  return runCount;
 }
 
 function listReharnessFiles(dir: string, prefix = ""): string {

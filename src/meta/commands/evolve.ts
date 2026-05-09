@@ -4,7 +4,7 @@ import type { CommandDefinition } from "../../core/types.js";
 import { execSync } from "child_process";
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from "fs";
 import { resolve } from "path";
-import { readProjectLogs, formatEvolutionInput } from "../lib/logs.js";
+import { writeInvestigationBrief } from "../lib/logs.js";
 import { verifyGenerated } from "../lib/verify.js";
 
 function gitAvailable(cwd: string): boolean {
@@ -24,80 +24,81 @@ function gitSnapshot(cwd: string, message: string): string | null {
 
 export function makeEvolveCommand(metaDir: string): CommandDefinition {
   const agentsDir = resolve(metaDir, "agents");
+  const referencesDir = resolve(metaDir, "references");
 
   return {
-    description: 'Analyze run logs and improve FSM',
-    usage: '[--auto] [--interactive]',
+    description: 'Investigate FSM runs and improve the machine',
+    usage: '[--interactive]',
 
     run: (args, ctx) => {
-      const autoMode = args.includes("--auto");
       const interactive = args.includes("--interactive");
       if (interactive && !hasTmux()) {
-        console.error("--interactive requires tmux. Run reharness inside a tmux session.");
+        console.error("--interactive requires tmux.");
         return null;
       }
       const target = ctx.cwd;
       const evolveDir = resolve(target, '.reharness', 'evolve');
+      const briefFile = resolve(evolveDir, 'investigation-brief.md');
+      const patchesFile = resolve(evolveDir, 'patches.md');
       const errorsFile = resolve(evolveDir, 'verify-errors.md');
 
       return definePipeline({
-        config: { target, autoMode, interactive },
+        config: { target, interactive },
         agents: agentsDir,
         cwd: ctx.cwd,
         logsDir: resolve(evolveDir, 'logs'),
-        initial: 'read_logs',
+        initial: 'brief',
 
         states: {
-          read_logs: {
+          // ── Brief: find logs, write paths, git snapshot ──
+          brief: {
             entry: async (c) => {
-              c.status('Reading logs...');
-              const logs = readProjectLogs(target);
-              if (logs.length === 0) {
-                c.emit('No run logs found. Run an FSM first.');
+              mkdirSync(evolveDir, { recursive: true });
+              const runCount = writeInvestigationBrief(target, briefFile);
+              if (runCount === 0) {
+                c.emit('No run logs found.');
                 return 'EMPTY';
               }
-              mkdirSync(evolveDir, { recursive: true });
-              writeFileSync(resolve(evolveDir, 'evolution-input.md'), formatEvolutionInput(target, logs));
-              c.emit(`✓ ${logs.length} run(s)`);
+              c.emit(`✓ ${runCount} run(s) found`);
 
-              // Git snapshot before changes
               if (gitAvailable(target)) {
-                const sha = gitSnapshot(target, 'reharness evolve: pre-evolution');
+                const sha = gitSnapshot(target, 'reharness evolve: pre-investigation');
                 if (sha) { c.data.beforeSha = sha; c.emit(`✓ git: ${sha.slice(0, 8)}`); }
               }
             },
-            on: { DONE: 'analyze', EMPTY: 'done_empty' },
+            on: { DONE: 'investigate', EMPTY: 'done_empty' },
           },
 
-          analyze: {
+          // ── Investigate: agent explores freely ──
+          investigate: {
             entry: async (c) => {
               const method = c.config.interactive ? 'interactive' : 'agent' as const;
-              await c[method]('analyzer', [
-                `Analyze FSM logs and plan patches.`,
-                `Read evolution input: ${evolveDir}/evolution-input.md`,
-                `Read all FSM files in: ${target}/.reharness/`,
-                `Write patches to: ${evolveDir}/patches.md`,
+              await c[method]('investigator', [
+                `Investigate this reharness FSM project.`,
+                `Read the investigation brief: ${briefFile}`,
+                `Read design principles: ${referencesDir}/design-principles.md`,
+                `Project root: ${target}`,
+                `Write patches to: ${patchesFile}`,
               ].join('\n'));
-              c.emit('✓ analyzed');
+              c.emit('✓ investigated');
             },
             on: 'patch',
           },
 
+          // ── Patch: check if changes needed, apply ──
           patch: {
             entry: async (c) => {
-              // Check if analyzer found anything to patch
-              const patchFile = resolve(evolveDir, 'patches.md');
-              if (!existsSync(patchFile)) {
-                c.emit('No patches needed.');
+              if (!existsSync(patchesFile)) {
+                c.emit('No patches file written.');
                 return 'SKIP';
               }
-              const content = readFileSync(patchFile, 'utf-8');
+              const content = readFileSync(patchesFile, 'utf-8');
               if (content.includes('No changes needed') || content.includes('No Changes Needed')) {
-                c.emit('No patches needed.');
+                c.emit('No changes needed.');
                 return 'SKIP';
               }
               await c.agent('fix', [
-                `Apply the patches described in: ${evolveDir}/patches.md`,
+                `Apply the patches described in: ${patchesFile}`,
                 `Modify files in: ${target}/.reharness/`,
               ].join('\n'));
               c.emit('✓ patched');
@@ -105,6 +106,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
             on: { DONE: 'verify', SKIP: 'done' },
           },
 
+          // ── Verify: structural checks + git snapshot ──
           verify: {
             entry: async (c) => {
               const errors = verifyGenerated(target);
@@ -115,9 +117,8 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
               }
               c.emit('✓ verified');
 
-              // Git snapshot after changes
               if (gitAvailable(target)) {
-                const sha = gitSnapshot(target, 'reharness evolve: post-evolution');
+                const sha = gitSnapshot(target, 'reharness evolve: post-investigation');
                 if (sha) {
                   c.data.afterSha = sha;
                   c.emit(`✓ git: ${sha.slice(0, 8)}`);
@@ -157,11 +158,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
             },
           },
 
-          done_empty: {
-            type: 'final',
-            status: 'success',
-          },
-
+          done_empty: { type: 'final', status: 'success' },
           error: { type: 'final', status: 'error' },
         },
       });
