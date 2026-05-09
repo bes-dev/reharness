@@ -173,7 +173,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
                 c.emit('COMMAND GENERATED');
                 c.emit('  reharness    # see available commands');
               } else {
-                c.emit('PIPELINE GENERATED');
+                c.emit('FSM GENERATED');
                 c.emit(`  cd ${target} && reharness`);
               }
             },

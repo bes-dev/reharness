@@ -45,5 +45,5 @@ All deterministic checks in one verify state:
 
 - Every agent state has a "Why separate" justification.
 - One verify state with ALL checks.
-- Code states for deterministic work: scaffold, verify, transform, assess, package.
+- Code states for any deterministic work (e.g. scaffold, verify, transform, assess, package).
 - This skeleton is a FROZEN CONTRACT. The implement agent cannot add or remove states.

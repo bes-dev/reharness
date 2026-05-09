@@ -46,7 +46,7 @@ export function verifyGenerated(targetDir: string): string[] {
     }
   }
 
-  // 4. Try to import each command and validate the pipeline graph
+  // 4. Try to import each command and validate the FSM graph
   for (const cmdFile of commandFiles) {
     const fullPath = resolve(commandsDir, cmdFile);
     try {
@@ -62,7 +62,7 @@ export function verifyGenerated(targetDir: string): string[] {
       );
     } catch (err: any) {
       const out = err.stdout || err.stderr || err.message;
-      errors.push(`## Pipeline validation failed: ${cmdFile}\n\`\`\`\n${out.slice(0, 2000)}\n\`\`\``);
+      errors.push(`## FSM validation failed: ${cmdFile}\n\`\`\`\n${out.slice(0, 2000)}\n\`\`\``);
     }
   }
 
