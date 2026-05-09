@@ -126,7 +126,7 @@ For each state: can the previous state absorb this work? If yes — merge. A new
 
 ## Design principles
 
-1. **Fat prompts, thin graph**: domain expertise in agent prompts, not in graph complexity.
+1. **Expertise in prompts, not in graph**: domain knowledge belongs in agent prompts. The graph should be minimal.
 2. **Constraints eliminate complexity**: every constraint removes work.
 3. **Each state proves necessity**: can the previous state absorb this?
 4. **One verify, all checks**: single verify state with all deterministic checks.
