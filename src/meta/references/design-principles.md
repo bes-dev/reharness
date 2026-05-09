@@ -54,4 +54,19 @@ export default defineCommand({
 // Guards: [{ target, guard: (c) => boolean }, { target }] — first match wins.
 // Final: { type: 'final', status: 'success' | 'error' }
 // Reserved names: generate.ts, evolve.ts (built-in commands)
+
+// Cycle pattern (iterative deepening):
+// assess: {
+//   entry: async (c) => {
+//     const gaps = findGaps(output);
+//     return gaps.length > 0 ? 'GAPS' : 'ENOUGH';
+//   },
+//   on: {
+//     ENOUGH: 'synthesize',
+//     GAPS: [
+//       { target: 'search', guard: (c) => c.retries('search') < 5 },
+//       { target: 'synthesize' },  // proceed with what we have
+//     ],
+//   },
+// }
 ```

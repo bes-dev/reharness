@@ -28,7 +28,10 @@ Write to the path specified in the task (skeleton.md):
 # Pipeline Skeleton
 
 ## State Graph
-[text diagram: state1 → state2 → ... → verify ↔ fix → done/error]
+[text diagram showing topology — cycles are allowed where the domain needs iterative deepening]
+Examples:
+  Linear: scaffold → generate → verify ↔ fix → done
+  With cycle: plan → search → assess → {ENOUGH: synthesize, GAPS: search} → verify → done
 
 ## State Table
 | State | Type | Agent/Code | File Scope (reads) | File Scope (writes) | Events |
