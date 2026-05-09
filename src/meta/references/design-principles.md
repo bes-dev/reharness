@@ -2,85 +2,137 @@
 
 ## What is a reharness FSM?
 
-A reharness FSM is a **finite state machine (FSM) that accomplishes a task**. Each state in the FSM either runs an AI agent that uses tools (web search, file read/write, shell commands) to do part of the work, or runs deterministic code (compile, validate, transform).
+A reharness FSM is a **finite state machine that accomplishes a task**. Each state either runs an AI agent (with tools: web search, file I/O, shell commands) or deterministic code (compile, validate, transform).
 
-The machine **executes the task itself**. When a user says "research topic X", the FSM SEARCHES the web, READS sources, ANALYZES content, and WRITES a report. When a user says "generate an app", the FSM CREATES files, WRITES code, and VERIFIES it compiles. The FSM orchestrates execution — it is not a code generator unless the task is specifically about generating code.
+The machine **executes the task itself**. "Research topic X" → the FSM searches the web, reads sources, analyzes, writes a report. "Generate an app" → the FSM creates files, writes code, verifies it compiles. The FSM is not a code generator unless the task specifically requires code generation.
 
-## How FSMs work
+## How to think in FSM terms
 
-A finite state machine has:
-- **States**: named nodes. Each state does one unit of work.
-- **Transitions**: edges between states, triggered by events.
-- **Events**: strings returned by a state's entry function. "DONE", "PASS", "FAIL", "GAPS", etc.
-- **Guards**: conditions on transitions. `c.retries('k') < 3` prevents infinite loops.
-- **Final states**: the machine stops here. Status is "success" or "error".
+### States are nouns — what the machine IS
 
-The machine executes one state at a time. Each state runs, emits an event, the event selects a transition, the machine moves to the next state. This continues until a final state is reached.
+Name each state as what the machine is currently doing: `searching`, `analyzing`, `verifying`, `scaffolding`. If you can't give a state a clear noun-phrase name, your decomposition is wrong.
 
-## Two types of states
+### Events are verbs — what HAPPENS
 
-**Agent state**: an AI agent runs with a prompt and uses tools to accomplish work. The agent sees only its prompt + files on disk. It has tools: read, write, edit, bash, grep, find, ls, web search, fetch webpage.
+Events are outcomes of a state's work: `DONE`, `PASS`, `FAIL`, `FOUND`, `GAPS`, `ENOUGH`, `ERROR`, `SKIP`. The entry function does work, then returns an event string that determines the next transition.
 
-**Code state**: deterministic logic. Shell commands, file checks, data transformation. No LLM, no reasoning. Fast, cheap, reproducible.
+### Two types of states
 
-Rule: if the work can be done without reasoning — code state. If it needs understanding, creativity, or judgment — agent state.
+**Agent state**: needs reasoning, creativity, judgment. An AI agent runs with a prompt and tools.
 
-## How to turn a user's task into an FSM
+**Code state**: deterministic. Shell commands, file checks, data validation, transformation. No LLM. Fast, cheap, reproducible. A code state's entry function can do logic, check conditions, and return different events:
 
-The user describes what they want. Your job is to decompose it into a sequence of states that accomplish it.
-
-**Step 1: What is the end result?** A file? A report? A deployed app? Working code? This determines your final artifact.
-
-**Step 2: What stages of work lead to that result?** Think backwards from the result. What must exist before the final step? What must exist before that? This gives you a chain of dependencies.
-
-**Step 3: For each stage — agent or code?** Does it need reasoning? Agent. Is it deterministic? Code.
-
-**Step 4: How do you know it worked?** What can you check deterministically? This becomes your verify state.
-
-**Step 5: What can go wrong and be auto-fixed?** This gives you a fix state with a bounded retry loop.
-
-**Step 6: Minimize.** For each state: can the previous state absorb this work? If yes — merge. A new state is justified only when the previous one genuinely cannot do this work.
-
-## Key insight: agents USE tools to do the task
-
-An agent in a reharness FSM is not a code writer (unless the task requires code). It's a worker with tools:
-- `web search` — find information online
-- `read` / `write` / `edit` — work with files
-- `bash` — run commands
-- `grep` / `find` — search in files
-
-When the task is "research a topic", the search agent USES web search to find sources. It doesn't write Python code that uses web search.
-
-When the task is "generate a mobile app", the code agent WRITES TypeScript files. The task is code generation, so the agent writes code.
-
-The machine always DOES the task. What the agents do depends on what the task IS.
-
-## Cycles and iteration
-
-FSMs can have cycles. State A → State B → State A is valid. Use bounded guards to ensure termination:
-
-```
-search → assess → {ENOUGH: next, GAPS: search (if retries < 5)}
+```typescript
+assess: {
+  entry: async (c) => {
+    const sources = JSON.parse(readFileSync('sources.json', 'utf-8'));
+    if (sources.length >= 10) return 'ENOUGH';
+    if (c.retries('search') >= 5) return 'ENOUGH';  // budget stop
+    return 'GAPS';
+  },
+  on: {
+    ENOUGH: 'synthesize',
+    GAPS: 'search',
+  },
+},
 ```
 
-This is natural for tasks that need iterative deepening: research (search until enough sources), optimization (improve until good enough), generation with quality checks (generate → verify → fix → verify).
+Rule: if the work can be done without reasoning — code state. If it needs understanding — agent state.
 
-## Verification
+## How to design an FSM
 
-Every machine should have a verify state that checks the output deterministically. What counts as verification depends on the task:
-- Code: does it compile? does it pass tests?
-- Content: does it meet word count? are citations present?
-- Research: are there enough sources? is coverage sufficient?
-- Data: does schema validate? are required fields present?
+### Step 1: Draw the happy path
+
+Start with the simplest success scenario. What states does the machine go through from start to finish?
+
+```
+research → analyze → write_report → done
+```
+
+This is your backbone. Every other feature is an addition to this.
+
+### Step 2: For each state — what can go wrong?
+
+Ask: "What happens if this state fails? Can it be retried? Does it need a fix agent?" This gives you error transitions and verify/fix loops.
+
+```
+research → analyze → write_report → verify → done
+                                      ↓ FAIL
+                                    fix → verify (retry ≤ 3)
+                                      ↓ EXHAUSTED
+                                    error
+```
+
+### Step 3: Where does iteration belong?
+
+Ask: "Does any stage need to repeat until a condition is met?" This gives you cycles with bounded guards.
+
+```
+search → assess → {ENOUGH: synthesize, GAPS: search}
+```
+
+The assess state is a CODE state — it counts sources, checks coverage, decides deterministically. The search state is an AGENT state — it reasons about what to search next.
+
+### Step 4: Are there conditional paths?
+
+Ask: "Does the machine need to skip or branch based on intermediate results?" Events + transitions handle this.
+
+```
+check_input: {
+  entry: async (c) => {
+    if (existsSync('existing-report.md')) return 'UPDATE';
+    return 'CREATE';
+  },
+  on: {
+    CREATE: 'research',
+    UPDATE: 'analyze_existing',
+  },
+},
+```
+
+### Step 5: Where does the user need to intervene?
+
+If the user should review or modify intermediate output, use `ctx.interactive()` — an interactive session in tmux where the user collaborates with an agent. Falls back to headless agent without tmux.
+
+```
+draft → interactive_review → {APPROVED: finalize, REVISE: draft}
+```
+
+### Step 6: Which agents need which model?
+
+Expensive tasks (research, creative writing) benefit from a strong model. Mechanical tasks (fix, format) can use a cheap one. Use `{ model }` option:
+
+```typescript
+await c.agent('research', task, { model: 'anthropic/claude-opus-4-6' });
+await c.agent('fix', task, { model: 'anthropic/claude-haiku-4-5' });
+```
+
+### Step 7: Verify completeness — the state × event table
+
+For every state, list every possible event. What happens? If you can't answer — there's a gap in your design.
+
+| State | DONE | PASS | FAIL | GAPS | ENOUGH | ERROR |
+|-------|------|------|------|------|--------|-------|
+| search | → assess | | | | | |
+| assess | | | | → search | → synthesize | |
+| synthesize | → verify | | | | | |
+| verify | | → done | → fix | | | → error |
+
+Empty cells are OK — they mean "this event can't happen in this state." But you should be conscious of each one.
+
+### Step 8: Minimize
+
+For each state: can the previous state absorb this work? If yes — merge. A new state is justified only when the previous one genuinely cannot do it (different tools, different iteration scope, deterministic vs reasoning).
 
 ## Design principles
 
 1. **Fat prompts, thin graph**: domain expertise in agent prompts, not in graph complexity.
 2. **Constraints eliminate complexity**: every constraint removes work.
 3. **Each state proves necessity**: can the previous state absorb this?
-4. **One verify, all checks**: single verify state.
-5. **Design for weak models**: no review loops, no debate. Every token earns its place.
+4. **One verify, all checks**: single verify state with all deterministic checks.
+5. **Design for weak models**: machine should work on a local 27B model. No review loops, no debate.
 6. **Skeleton = frozen contract**: topology decided before implementation.
+7. **States communicate through files**: one state writes files, next state reads them. Pure functions of the filesystem.
 
 ## reharness API
 
@@ -92,10 +144,26 @@ interface StateContext<C> {
   shell: (cmd: string, label?: string) => boolean;  // true = exit 0
   emit: (msg: string) => void;        // Log to TUI
   status: (text: string) => void;     // Status bar
-  retry: (key: string) => number;     // Increment + return
-  retries: (key: string) => number;   // Read without increment
+  retry: (key: string) => number;     // Increment + return count
+  retries: (key: string) => number;   // Read count without increment
   data: Record<string, any>;          // Shared state (persisted for resume)
 }
+
+// Entry function: does work, returns event string (or void = 'DONE')
+// Events select transitions:
+//   on: 'next_state'                        — shorthand for { DONE: 'next_state' }
+//   on: { PASS: 'a', FAIL: 'b' }           — branching
+//   on: { FAIL: [                           — guarded transitions (first match wins)
+//     { target: 'fix', guard: (c) => c.retries('v') < 3 },
+//     { target: 'error' },                  — fallback (no guard = always matches)
+//   ]}
+
+// Final states:
+//   done:  { type: 'final', status: 'success' }
+//   error: { type: 'final', status: 'error' }
+
+// Exit actions (cleanup after leaving a state):
+//   exit: async (c) => { /* cleanup */ }
 
 // Command structure:
 import { defineCommand, definePipeline } from 'reharness';
@@ -111,8 +179,5 @@ export default defineCommand({
   }),
 });
 
-// Events: entry returns string → event. void → 'DONE'.
-// Guards: [{ target, guard: (c) => boolean }, { target }]
-// Final: { type: 'final', status: 'success' | 'error' }
 // Reserved command names: generate.ts, evolve.ts
 ```
