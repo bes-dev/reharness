@@ -1,5 +1,5 @@
 import { execSync, spawn } from "child_process";
-import { createReadStream, mkdirSync, readFileSync, unlinkSync, writeFileSync, chmodSync } from "fs";
+import { createReadStream, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
 import { Readable } from "stream";
@@ -34,8 +34,9 @@ export function hasTmux(): boolean {
   return _hasTmux;
 }
 
-function writeScript(path: string, content: string) {
-  writeFileSync(path, content, { mode: 0o755 });
+/** Shell-escape a string for use inside single quotes. */
+function sq(s: string): string {
+  return "'" + s.replace(/'/g, "'\"'\"'") + "'";
 }
 
 export function spawnInTmux(config: TmuxSpawnConfig): TmuxHandle {
@@ -46,32 +47,30 @@ export function spawnInTmux(config: TmuxSpawnConfig): TmuxHandle {
   const scriptFile = join(tmp, `${id}.sh`);
   const signal = `${id}-done`;
 
-  // Write args to a JSON file so the script can read them without shell escaping
-  const argsFile = join(tmp, `${id}.args.json`);
-  writeFileSync(argsFile, JSON.stringify(config.args));
+  // Build command with proper escaping inside the script
+  const cmdLine = config.binary + " " + config.args.map(a => sq(a)).join(" ");
 
   if (config.interactive) {
-    writeScript(scriptFile, [
+    writeFileSync(scriptFile, [
       `#!/usr/bin/env bash`,
-      `cd ${JSON.stringify(config.cwd)}`,
-      `ARGS=$(cat ${JSON.stringify(argsFile)})`,
-      `eval ${JSON.stringify(config.binary)} $(node -e "JSON.parse(require('fs').readFileSync('${argsFile}','utf8')).forEach(a=>process.stdout.write(JSON.stringify(a)+' '))")`,
-      `echo $? > ${JSON.stringify(exitFile)}`,
+      `cd ${sq(config.cwd)}`,
+      cmdLine,
+      `echo $? > ${sq(exitFile)}`,
       `tmux wait-for -S '${signal}'`,
-    ].join("\n"));
+    ].join("\n"), { mode: 0o755 });
 
     if (config.logFile) {
       mkdirSync(dirname(config.logFile), { recursive: true });
     }
 
-    execSync(`tmux split-window -v -d ${JSON.stringify(scriptFile)}`, {
+    execSync(`tmux split-window -v -d ${sq(scriptFile)}`, {
       cwd: config.cwd,
       encoding: "utf-8",
     });
 
     if (config.logFile) {
       try {
-        execSync(`tmux pipe-pane -o -t '{last}' "cat >> ${JSON.stringify(config.logFile)}"`, { stdio: "ignore" });
+        execSync(`tmux pipe-pane -o -t '{last}' "cat >> ${sq(config.logFile)}"`, { stdio: "ignore" });
       } catch {}
     }
 
@@ -79,22 +78,22 @@ export function spawnInTmux(config: TmuxSpawnConfig): TmuxHandle {
     return {
       jsonStream: null,
       done,
-      cleanup: () => { safeUnlink(exitFile); safeUnlink(scriptFile); safeUnlink(argsFile); },
+      cleanup: () => { safeUnlink(exitFile); safeUnlink(scriptFile); },
     };
   }
 
   // Headless-in-tmux: JSON mode with FIFO for parsing
-  execSync(`mkfifo ${JSON.stringify(fifoPath)}`);
+  execSync(`mkfifo ${sq(fifoPath)}`);
 
-  writeScript(scriptFile, [
+  writeFileSync(scriptFile, [
     `#!/usr/bin/env bash`,
-    `cd ${JSON.stringify(config.cwd)}`,
-    `${config.binary} $(node -e "JSON.parse(require('fs').readFileSync('${argsFile}','utf8')).forEach(a=>process.stdout.write(JSON.stringify(a)+' '))") | tee ${JSON.stringify(fifoPath)}`,
-    `echo \${PIPESTATUS[0]} > ${JSON.stringify(exitFile)}`,
+    `cd ${sq(config.cwd)}`,
+    `${cmdLine} | tee ${sq(fifoPath)}`,
+    `echo \${PIPESTATUS[0]} > ${sq(exitFile)}`,
     `tmux wait-for -S '${signal}'`,
-  ].join("\n"));
+  ].join("\n"), { mode: 0o755 });
 
-  execSync(`tmux split-window -v -d ${JSON.stringify(scriptFile)}`, {
+  execSync(`tmux split-window -v -d ${sq(scriptFile)}`, {
     cwd: config.cwd,
     encoding: "utf-8",
   });
@@ -105,7 +104,7 @@ export function spawnInTmux(config: TmuxSpawnConfig): TmuxHandle {
   return {
     jsonStream,
     done,
-    cleanup: () => { safeUnlink(fifoPath); safeUnlink(exitFile); safeUnlink(scriptFile); safeUnlink(argsFile); },
+    cleanup: () => { safeUnlink(fifoPath); safeUnlink(exitFile); safeUnlink(scriptFile); },
   };
 }
 
