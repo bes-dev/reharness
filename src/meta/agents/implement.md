@@ -9,45 +9,17 @@ THEN: Generate all files.
 ## What you produce
 
 ### 1. Agent prompts (.reharness/agents/*.md)
-One .md file per agent in the skeleton's roster. Each prompt should contain all domain knowledge needed for that agent's work:
-- What to read and what to produce (exact paths from skeleton)
-- Domain-specific patterns, templates, formats relevant to this agent's task
-- Anti-patterns and gotchas
-- Self-verification: how the agent checks its own work before finishing
-- Rules: what NOT to do, scope boundaries
-
-Prompts are LAYERED: each agent reads the previous stage's output. "Read research notes first. Your report must cite these sources."
+One .md file per agent in the skeleton's roster. Each prompt should contain all domain knowledge the agent needs to do its work well. Prompts are layered: each agent reads the previous stage's output.
 
 ### 2. Command file (.reharness/commands/*.ts)
-TypeScript implementing the skeleton's state graph using reharness API:
-
-```typescript
-import { defineCommand, definePipeline } from 'reharness';
-export default defineCommand({
-  description: '...',
-  usage: '<args>',
-  run: (args, ctx) => {
-    return definePipeline({
-      config: { ... },
-      agents: ctx.agents,
-      cwd: ctx.cwd,
-      logsDir: resolve(target, 'logs'),
-      initial: 'first_state',
-      states: { /* from skeleton */ },
-    });
-  },
-});
-```
+TypeScript implementing the skeleton's state graph using reharness API. Follow the skeleton EXACTLY — same state names, same transitions.
 
 ### 3. Lib helpers (.reharness/lib/*.ts)
 Verification functions, scaffold helpers, assessment logic — code states call these.
 
 ## Rules
 
-- Follow the skeleton EXACTLY. Same state names, same transitions, same agent names.
-- Prompts should contain all domain knowledge the agent needs. Short generic prompts = weak agents.
+- Follow the skeleton EXACTLY.
 - Import ONLY from 'reharness' and Node.js built-ins.
-- Verify states use deterministic checks (execSync, existsSync, regex, JSON.parse), not LLM judgment.
+- Verify states use deterministic checks, not LLM judgment.
 - NEVER name command files generate.ts or evolve.ts — reserved.
-- Use `.join('\n')` for multi-line agent task strings.
-- All file paths resolved with `resolve()`.
