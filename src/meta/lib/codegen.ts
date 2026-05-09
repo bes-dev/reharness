@@ -78,6 +78,9 @@ function generateState(name: string, state: SkeletonState): string {
     return `        ${name}: { type: 'final', status: '${state.status || "success"}' },`;
   }
 
+  // Find retry keys from guarded transitions (retries:key<N)
+  const retryKeys = findRetryKeys(state.on || {});
+
   const lines: string[] = [];
   lines.push(`        ${name}: {`);
 
@@ -90,15 +93,48 @@ function generateState(name: string, state: SkeletonState): string {
     lines.push(`            ].join('\\n'));`);
     lines.push(`          },`);
   } else {
+    // Code state: wrap in try/catch, auto-increment retry counters for guarded events
     lines.push(`          entry: async (c) => {`);
-    lines.push(`            return ${name}Entry(c);`);
+    lines.push(`            try {`);
+    lines.push(`              const event = ${name}Entry(c);`);
+    // Increment retry counter for events that have guarded transitions
+    for (const { event, key } of retryKeys) {
+      lines.push(`              if (event === '${event}') c.retry('${key}');`);
+    }
+    lines.push(`              return event;`);
+    lines.push(`            } catch (err: any) {`);
+    lines.push(`              c.emit(\`✗ ${name}: \${err.message}\`);`);
+    lines.push(`              return 'ERROR';`);
+    lines.push(`            }`);
     lines.push(`          },`);
   }
 
-  lines.push(`          on: ${generateTransitions(state.on || {})},`);
+  // Ensure ERROR transition exists for code states
+  const on = { ...(state.on || {}) };
+  if (state.type === "code" && !on["ERROR"]) {
+    on["ERROR"] = "error";
+  }
+
+  lines.push(`          on: ${generateTransitions(on)},`);
   lines.push(`        },`);
 
   return lines.join("\n");
+}
+
+/** Extract retry keys from guarded transitions: retries:key<N → {event, key} */
+function findRetryKeys(on: Record<string, string | GuardedTransition[]>): Array<{event: string, key: string}> {
+  const keys: Array<{event: string, key: string}> = [];
+  for (const [event, target] of Object.entries(on)) {
+    if (Array.isArray(target)) {
+      for (const gt of target) {
+        if (gt.guard) {
+          const match = gt.guard.match(/^retries:(\w+)<(\d+)$/);
+          if (match) keys.push({ event, key: match[1] });
+        }
+      }
+    }
+  }
+  return keys;
 }
 
 function generateTransitions(on: Record<string, string | GuardedTransition[]>): string {
