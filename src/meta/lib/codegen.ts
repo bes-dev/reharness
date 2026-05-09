@@ -1,4 +1,4 @@
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, readFileSync, appendFileSync, mkdirSync, existsSync } from "fs";
 import { resolve, dirname } from "path";
 import type { SkeletonJSON, SkeletonState, GuardedTransition } from "./skeleton-schema.js";
 
@@ -24,12 +24,36 @@ export function generateFromSkeleton(skeleton: SkeletonJSON, reharnessDir: strin
     .map(([name]) => name);
 
   writeFileSync(commandPath, generateCommandFile(skeleton, codeStates));
-  writeFileSync(libPath, generateLibFile(skeleton, codeStates));
 
-  // Generate stub .md files for every agent state
+  // Lib: only create if new, or append stubs for new code states
+  if (!existsSync(libPath)) {
+    writeFileSync(libPath, generateLibFile(skeleton, codeStates));
+  } else {
+    // Append stubs only for code states that don't have an entry function yet
+    const existing = readFileSync(libPath, "utf-8");
+    const newStubs: string[] = [];
+    for (const name of codeStates) {
+      if (!existing.includes(`function ${name}Entry`)) {
+        const state = skeleton.states[name];
+        const events = Object.keys(state.on || {});
+        newStubs.push(`\nexport function ${name}Entry(c: any): string {`);
+        newStubs.push(`  // TODO: implement ${name} logic`);
+        newStubs.push(`  // Possible return values: ${events.map(e => `'${e}'`).join(", ")}`);
+        newStubs.push(`  return '${events[0] || "DONE"}';`);
+        newStubs.push(`}\n`);
+      }
+    }
+    if (newStubs.length > 0) {
+      appendFileSync(libPath, newStubs.join("\n"));
+    }
+  }
+
+  // Generate stub .md files only for NEW agent states (don't overwrite existing prompts)
   for (const name of agentStates) {
     const promptPath = resolve(agentsDir, `${name}.md`);
-    writeFileSync(promptPath, `<!-- TODO: write prompt for ${name} agent -->\n`);
+    if (!existsSync(promptPath)) {
+      writeFileSync(promptPath, `<!-- TODO: write prompt for ${name} agent -->\n`);
+    }
   }
 }
 
