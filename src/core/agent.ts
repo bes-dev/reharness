@@ -1,6 +1,6 @@
 import { spawn } from "child_process";
 import { appendFileSync, mkdirSync, writeFileSync } from "fs";
-import { dirname } from "path";
+import { basename, dirname } from "path";
 import { Readable } from "stream";
 import { hasTmux, spawnInTmux } from "./tmux.js";
 
@@ -121,7 +121,7 @@ export async function runAgentProcess(config: AgentRunConfig): Promise<AgentRunR
 async function runViaTmux(binary: string, piArgs: string[], config: AgentRunConfig): Promise<AgentRunResult> {
   const handle = spawnInTmux({
     binary, args: piArgs, cwd: config.cwd,
-    sessionLabel: config.prompt, signal: config.signal,
+    name: basename(config.prompt, ".md"), signal: config.signal,
   });
 
   const parsed = handle.jsonStream
@@ -200,7 +200,7 @@ export async function runInteractiveProcess(config: AgentRunConfig): Promise<voi
     binary,
     args: [...(config.piModel ? ["--model", config.piModel] : []), "--system-prompt", config.prompt, config.task],
     cwd: config.cwd,
-    sessionLabel: config.prompt,
+    name: basename(config.prompt, ".md"),
     logFile: config.logFile,
     interactive: true,
     signal: config.signal,

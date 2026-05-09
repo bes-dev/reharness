@@ -8,7 +8,7 @@ export interface TmuxSpawnConfig {
   binary: string;
   args: string[];
   cwd: string;
-  sessionLabel: string;
+  name: string;
   logFile?: string;
   interactive?: boolean;
   signal?: AbortSignal;
@@ -16,6 +16,7 @@ export interface TmuxSpawnConfig {
 
 export interface TmuxHandle {
   jsonStream: Readable | null;
+  paneId: string;
   done: Promise<{ exitCode: number }>;
   cleanup: () => void;
 }
@@ -34,9 +35,16 @@ export function hasTmux(): boolean {
   return _hasTmux;
 }
 
-/** Shell-escape a string for use inside single quotes. */
 function sq(s: string): string {
   return "'" + s.replace(/'/g, "'\"'\"'") + "'";
+}
+
+function safeUnlink(path: string) {
+  try { unlinkSync(path); } catch {}
+}
+
+function killPane(paneId: string) {
+  try { execSync(`tmux kill-pane -t ${sq(paneId)}`, { stdio: "ignore" }); } catch {}
 }
 
 export function spawnInTmux(config: TmuxSpawnConfig): TmuxHandle {
@@ -46,9 +54,8 @@ export function spawnInTmux(config: TmuxSpawnConfig): TmuxHandle {
   const fifoPath = join(tmp, `${id}.fifo`);
   const scriptFile = join(tmp, `${id}.sh`);
   const signal = `${id}-done`;
-
-  // Build command with proper escaping inside the script
   const cmdLine = config.binary + " " + config.args.map(a => sq(a)).join(" ");
+  const windowName = config.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 30);
 
   if (config.interactive) {
     writeFileSync(scriptFile, [
@@ -56,33 +63,35 @@ export function spawnInTmux(config: TmuxSpawnConfig): TmuxHandle {
       `cd ${sq(config.cwd)}`,
       cmdLine,
       `echo $? > ${sq(exitFile)}`,
-      `tmux wait-for -S '${signal}'`,
+      `tmux wait-for -S ${sq(signal)}`,
     ].join("\n"), { mode: 0o755 });
 
     if (config.logFile) {
       mkdirSync(dirname(config.logFile), { recursive: true });
     }
 
-    execSync(`tmux split-window -v -d ${sq(scriptFile)}`, {
-      cwd: config.cwd,
-      encoding: "utf-8",
-    });
+    // New window (not split) — keeps TUI intact
+    const paneId = execSync(
+      `tmux new-window -d -n ${sq(windowName)} -P -F '#{pane_id}' ${sq(scriptFile)}`,
+      { cwd: config.cwd, encoding: "utf-8" },
+    ).trim();
 
     if (config.logFile) {
       try {
-        execSync(`tmux pipe-pane -o -t '{last}' "cat >> ${sq(config.logFile)}"`, { stdio: "ignore" });
+        execSync(`tmux pipe-pane -o -t ${sq(paneId)} ${sq(`cat >> ${config.logFile}`)}`, { stdio: "ignore" });
       } catch {}
     }
 
-    const done = waitForSignal(signal, exitFile, config.signal);
+    const done = waitForSignal(signal, exitFile, paneId, config.signal);
     return {
       jsonStream: null,
+      paneId,
       done,
       cleanup: () => { safeUnlink(exitFile); safeUnlink(scriptFile); },
     };
   }
 
-  // Headless-in-tmux: JSON mode with FIFO for parsing
+  // Headless-in-tmux: new window with FIFO for JSON parsing
   execSync(`mkfifo ${sq(fifoPath)}`);
 
   writeFileSync(scriptFile, [
@@ -90,31 +99,53 @@ export function spawnInTmux(config: TmuxSpawnConfig): TmuxHandle {
     `cd ${sq(config.cwd)}`,
     `${cmdLine} | tee ${sq(fifoPath)}`,
     `echo \${PIPESTATUS[0]} > ${sq(exitFile)}`,
-    `tmux wait-for -S '${signal}'`,
+    `tmux wait-for -S ${sq(signal)}`,
   ].join("\n"), { mode: 0o755 });
 
-  execSync(`tmux split-window -v -d ${sq(scriptFile)}`, {
-    cwd: config.cwd,
-    encoding: "utf-8",
-  });
+  const paneId = execSync(
+    `tmux new-window -d -n ${sq(windowName)} -P -F '#{pane_id}' ${sq(scriptFile)}`,
+    { cwd: config.cwd, encoding: "utf-8" },
+  ).trim();
 
   const jsonStream = createReadStream(fifoPath, { encoding: "utf-8" });
-  const done = waitForSignal(signal, exitFile, config.signal);
+  const done = waitForSignal(signal, exitFile, paneId, config.signal);
 
   return {
     jsonStream,
+    paneId,
     done,
     cleanup: () => { safeUnlink(fifoPath); safeUnlink(exitFile); safeUnlink(scriptFile); },
   };
 }
 
-function waitForSignal(signal: string, exitFile: string, abort?: AbortSignal): Promise<{ exitCode: number }> {
+function waitForSignal(
+  signal: string,
+  exitFile: string,
+  paneId: string,
+  abort?: AbortSignal,
+  timeoutMs = 600000,
+): Promise<{ exitCode: number }> {
   return new Promise((resolve) => {
     const proc = spawn("tmux", ["wait-for", signal], { stdio: "ignore" });
+    let settled = false;
+
+    function finish(exitCode: number) {
+      if (settled) return;
+      settled = true;
+      proc.kill("SIGTERM");
+      clearTimeout(timer);
+      resolve({ exitCode });
+    }
+
+    // Timeout: if agent doesn't finish in timeoutMs, kill it
+    const timer = setTimeout(() => {
+      killPane(paneId);
+      finish(124); // 124 = timeout (same as GNU timeout)
+    }, timeoutMs);
 
     const onAbort = () => {
-      proc.kill("SIGTERM");
-      resolve({ exitCode: 130 });
+      killPane(paneId);
+      finish(130);
     };
     abort?.addEventListener("abort", onAbort, { once: true });
 
@@ -122,11 +153,7 @@ function waitForSignal(signal: string, exitFile: string, abort?: AbortSignal): P
       abort?.removeEventListener("abort", onAbort);
       let exitCode = 1;
       try { exitCode = parseInt(readFileSync(exitFile, "utf-8").trim(), 10) || 1; } catch {}
-      resolve({ exitCode });
+      finish(exitCode);
     });
   });
-}
-
-function safeUnlink(path: string) {
-  try { unlinkSync(path); } catch {}
 }
