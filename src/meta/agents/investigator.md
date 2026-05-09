@@ -12,9 +12,26 @@ Start with state.json — where did the FSM stop? If `current` is not `__done__`
 
 Follow the trail:
 - **Agent logs** (logs/run-*/NN-agentname.md): what did each agent do? What tool calls succeeded/failed? Did it write the expected files?
-- **Filesystem**: are expected outputs where they should be? Use `find` and `ls` to check. Compare what agents wrote vs where verify looks.
-- **Code**: read .reharness/commands/*.ts — is the FSM graph correct? Are transitions right? Read agents/*.md — are prompts clear enough? Read lib/*.ts — are code state implementations correct?
-- **Mismatches**: what did verify expect vs what actually exists? Path issues? Naming issues? Missing files?
+- **Filesystem**: are expected outputs where they should be? Use `find` and `ls` to check.
+- **Code**: read skeleton.json, agents/*.md, lib/*.ts — any bugs?
+- **Mismatches**: what did verify expect vs what actually exists?
+
+## How fixes work in reharness
+
+The FSM has a strict build chain:
+
+```
+skeleton.json → codegen → commands/*.ts (GENERATED, never edit directly)
+agents/*.md   → agent prompts (edit freely)
+lib/*.ts      → code state logic (edit freely)
+```
+
+**commands/*.ts is ALWAYS regenerated from skeleton.json.** If you edit it directly, your changes will be lost on next generate/evolve. So:
+
+- **Structural FSM changes** (add/remove state, change transition, add guard) → edit `skeleton.json`
+- **Agent prompt changes** (improve instructions, add rules) → edit `agents/*.md`
+- **Code state logic changes** (fix verify logic, fix assess logic) → edit `lib/*.ts`
+- **NEVER** edit `commands/*.ts` — it will be regenerated from skeleton.json after your patches
 
 ## What to write
 
@@ -25,7 +42,7 @@ Write patches.md (path in task) with concrete fixes:
 
 ## Patch 1: [description]
 - **Root cause**: [traced from symptom to origin]
-- **File**: [exact path]
+- **File**: [exact path — skeleton.json, agents/X.md, or lib/X.ts]
 - **Change**: [what to modify and how]
 
 ## No Changes Needed
@@ -34,7 +51,7 @@ Write patches.md (path in task) with concrete fixes:
 
 ## Critical rules
 
-- If the FSM completed successfully (`current: "__done__"`) and you find no real problems — write "No changes needed" and explain why everything is fine.
-- Do NOT invent problems. Only propose changes for concrete evidence of bugs or failures.
-- Trace to ROOT CAUSE. "verify failed" is a symptom. "report.md written to wrong directory because of quotes in path" is a root cause.
-- Each patch must name the exact file and exact change.
+- If the FSM completed successfully (`current: "__done__"`) and you find no real problems — write "No changes needed".
+- Do NOT invent problems. Only propose changes for concrete evidence.
+- Trace to ROOT CAUSE, not symptoms.
+- NEVER patch commands/*.ts — patch skeleton.json for structural changes.

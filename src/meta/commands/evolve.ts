@@ -6,6 +6,8 @@ import { writeFileSync, mkdirSync, existsSync, readFileSync } from "fs";
 import { resolve } from "path";
 import { writeInvestigationBrief } from "../lib/logs.js";
 import { verifyGenerated } from "../lib/verify.js";
+import { validateSkeleton, type SkeletonJSON } from "../lib/skeleton-schema.js";
+import { generateFromSkeleton } from "../lib/codegen.js";
 
 function gitAvailable(cwd: string): boolean {
   try {
@@ -37,10 +39,12 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
         return null;
       }
       const target = ctx.cwd;
-      const evolveDir = resolve(target, '.reharness', 'evolve');
+      const reharnessDir = resolve(target, '.reharness');
+      const evolveDir = resolve(reharnessDir, 'evolve');
       const briefFile = resolve(evolveDir, 'investigation-brief.md');
       const patchesFile = resolve(evolveDir, 'patches.md');
       const errorsFile = resolve(evolveDir, 'verify-errors.md');
+      const skeletonFile = resolve(reharnessDir, 'generate', 'skeleton.json');
 
       return definePipeline({
         config: { target, interactive },
@@ -72,6 +76,11 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
           // ── Investigate: agent explores freely ──
           investigate: {
             entry: async (c) => {
+              // Snapshot skeleton.json before investigation to detect changes
+              if (existsSync(skeletonFile)) {
+                c.data.skeletonBefore = readFileSync(skeletonFile, 'utf-8');
+              }
+
               const method = c.config.interactive ? 'interactive' : 'agent' as const;
               await c[method]('investigator', [
                 `Investigate this reharness FSM project.`,
@@ -85,7 +94,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
             on: 'patch',
           },
 
-          // ── Patch: check if changes needed, apply ──
+          // ── Patch: apply fixes, regenerate command if skeleton changed ──
           patch: {
             entry: async (c) => {
               if (!existsSync(patchesFile)) {
@@ -97,11 +106,33 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
                 c.emit('No changes needed.');
                 return 'SKIP';
               }
+
+              // Apply patches
               await c.agent('fix', [
                 `Apply the patches described in: ${patchesFile}`,
-                `Modify files in: ${target}/.reharness/`,
+                `Modify files in: ${reharnessDir}/`,
+                `IMPORTANT: for structural FSM changes, edit skeleton.json not commands/*.ts`,
               ].join('\n'));
               c.emit('✓ patched');
+
+              // If skeleton.json changed, regenerate command .ts from it
+              if (existsSync(skeletonFile)) {
+                const skeletonNow = readFileSync(skeletonFile, 'utf-8');
+                if (skeletonNow !== c.data.skeletonBefore) {
+                  try {
+                    const skeleton: SkeletonJSON = JSON.parse(skeletonNow);
+                    const errors = validateSkeleton(skeleton);
+                    if (errors.length > 0) {
+                      c.emit(`✗ skeleton invalid after patch: ${errors[0]}`);
+                      return 'DONE'; // let verify catch it
+                    }
+                    generateFromSkeleton(skeleton, reharnessDir);
+                    c.emit('✓ regenerated command from updated skeleton');
+                  } catch (e: any) {
+                    c.emit(`✗ skeleton parse error: ${e.message}`);
+                  }
+                }
+              }
             },
             on: { DONE: 'verify', SKIP: 'done' },
           },
@@ -141,7 +172,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
               await c.agent('fix', [
                 `Fix errors from evolution.`,
                 `Read errors: ${errorsFile}`,
-                `Fix files in: ${target}/.reharness/`,
+                `Fix files in: ${reharnessDir}/`,
               ].join('\n'));
             },
             on: 'verify',
