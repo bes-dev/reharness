@@ -2,23 +2,40 @@ You write a structured scope document for a reharness pipeline. This is the comp
 
 Read the research file (path in task). Then write a scope document covering:
 
-## 1. Input → Output
-What does the user provide? What is the final artifact? Be concrete about file formats and structure.
+## 1. Pipeline Type
+Is this a **generation pipeline** (agents create files/code/content), an **execution pipeline** (agents perform a task — search, analyze, transform data), or a **hybrid**? This determines how stages and artifacts are structured.
 
-## 2. Layers
-What are the data transformation layers from input to output? Each layer transforms artifacts from the previous layer. Example: spec → types/interfaces → implementation → presentation → output.
+## 2. Input → Output
+What does the user provide? What is the final artifact? Be concrete.
 
-## 3. Constraints
-What ELIMINATES work? Think hard about this — every constraint you identify is an agent that doesn't need to exist. Examples: "offline-first" eliminates backend. "Single file output" eliminates assembly. "No build step" eliminates scaffold.
+## 3. Stages
+What are the stages of work from input to output? Each stage transforms the previous stage's output into something closer to the final result.
 
-## 4. File Scopes
-For each layer: what specific files/directories does it produce? This determines agent boundaries — different file scopes = different agents.
+Code generation: spec → types/interfaces → implementation → presentation → output
+Research: plan questions → search → extract → analyze → synthesize report
+Content: research → outline → draft → refine → format
+Data processing: ingest → clean → transform → validate → output
 
-## 5. Verification
-What deterministic checks prove the output is correct? Exact commands. This becomes the verify state. Include all applicable: syntax checks, compilation, linting, structural validation, runtime smoke tests.
+## 4. Artifact Scopes
+For each stage: what does it produce? These are files on disk — both code files (src/*.ts) and data artifacts (research.md, sources.json, report.md) count equally. This determines agent boundaries.
 
-## 6. Instance Variability
-What changes between runs of this pipeline? (content varies, structure varies, both?) What stays constant? Constants → scaffold code. Variables → agent reasoning.
+## 5. Constraints
+What ELIMINATES work? Every constraint is an agent or stage that doesn't need to exist.
+
+Code gen: "offline-first" eliminates backend. "No build step" eliminates scaffold.
+Research: "single output file" eliminates assembly. "Bounded iterations" eliminates infinite loops.
+Content: "no images" eliminates asset pipeline. "Markdown only" eliminates formatting agents.
+
+## 6. Verification
+What deterministic checks prove the output is correct? Exact commands. This becomes the verify state.
+
+Code: tsc, lint, tests, build
+Content: word count, section count, link validation, spell check
+Research: source count, citation coverage, question coverage
+Data: schema validation, row counts, null checks
+
+## 7. Instance Variability
+What changes between runs? What stays constant? Constants → code states. Variables → agent reasoning.
 
 Write to the path specified in the task. This document is the SPEC — the skeleton agent will design the FSM graph against it.
 
