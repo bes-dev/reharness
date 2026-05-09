@@ -64,7 +64,7 @@ export function spawnInTmux(config: TmuxSpawnConfig): TmuxHandle {
       mkdirSync(dirname(config.logFile), { recursive: true });
     }
 
-    execSync(`tmux split-window -v -d -t '{last}' ${JSON.stringify(scriptFile)}`, {
+    execSync(`tmux split-window -v -d ${JSON.stringify(scriptFile)}`, {
       cwd: config.cwd,
       encoding: "utf-8",
     });
@@ -94,7 +94,7 @@ export function spawnInTmux(config: TmuxSpawnConfig): TmuxHandle {
     `tmux wait-for -S '${signal}'`,
   ].join("\n"));
 
-  execSync(`tmux split-window -v -d -t '{last}' ${JSON.stringify(scriptFile)}`, {
+  execSync(`tmux split-window -v -d ${JSON.stringify(scriptFile)}`, {
     cwd: config.cwd,
     encoding: "utf-8",
   });
