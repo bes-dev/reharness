@@ -183,7 +183,10 @@ function runHeadless(binary: string, piArgs: string[], config: AgentRunConfig): 
  */
 export async function runInteractiveProcess(config: AgentRunConfig): Promise<void> {
   if (!hasTmux()) {
-    throw new Error("ctx.interactive() requires tmux. Run reharness inside a tmux session.");
+    // Fallback: run as headless agent when tmux is not available
+    config.onLine?.("⚠ tmux not available — running as non-interactive agent");
+    await runAgentProcess(config);
+    return;
   }
 
   const binary = config.piBinary || "pi";
