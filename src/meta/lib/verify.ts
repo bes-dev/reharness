@@ -46,10 +46,16 @@ export function verifyGenerated(targetDir: string): string[] {
         ? new Set(readdirSync(agentsDir).filter(f => f.endsWith(".md")).map(f => f.replace(".md", "")))
         : new Set<string>();
 
+      // Check all agent prompts exist and are filled (no TODO stubs)
       for (const [name, state] of Object.entries(skeleton.states)) {
         if (state.type === "agent") {
           if (!agentMdFiles.has(name)) {
-            errors.push(`## Missing agent prompt for skeleton state\nState \`${name}\` is type "agent" but \`.reharness/agents/${name}.md\` does not exist`);
+            errors.push(`## Missing agent prompt\nState \`${name}\` requires \`.reharness/agents/${name}.md\``);
+          } else {
+            const content = readFileSync(resolve(agentsDir, `${name}.md`), "utf-8");
+            if (content.includes("<!-- TODO")) {
+              errors.push(`## Unfilled agent prompt\n\`agents/${name}.md\` is still a stub — write the actual prompt`);
+            }
           }
         }
       }
@@ -60,7 +66,7 @@ export function verifyGenerated(targetDir: string): string[] {
         const content = readFileSync(resolve(libDir, libFile), "utf-8");
         const todoMatches = content.match(/\/\/\s*TODO/g);
         if (todoMatches) {
-          errors.push(`## Unfilled code state stubs\n\`${libFile}\` has ${todoMatches.length} TODO stub(s) — code state logic not implemented`);
+          errors.push(`## Unfilled code state stub\n\`lib/${libFile}\` has ${todoMatches.length} TODO stub(s) — implement the logic`);
         }
       }
     } catch {}

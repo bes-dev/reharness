@@ -9,16 +9,28 @@ import type { SkeletonJSON, SkeletonState, GuardedTransition } from "./skeleton-
 export function generateFromSkeleton(skeleton: SkeletonJSON, reharnessDir: string): void {
   const commandPath = resolve(reharnessDir, "commands", `${skeleton.id}.ts`);
   const libPath = resolve(reharnessDir, "lib", `${skeleton.id}-states.ts`);
+  const agentsDir = resolve(reharnessDir, "agents");
 
   mkdirSync(dirname(commandPath), { recursive: true });
   mkdirSync(dirname(libPath), { recursive: true });
+  mkdirSync(agentsDir, { recursive: true });
 
   const codeStates = Object.entries(skeleton.states)
     .filter(([, s]) => s.type === "code")
     .map(([name]) => name);
 
+  const agentStates = Object.entries(skeleton.states)
+    .filter(([, s]) => s.type === "agent")
+    .map(([name]) => name);
+
   writeFileSync(commandPath, generateCommandFile(skeleton, codeStates));
   writeFileSync(libPath, generateLibFile(skeleton, codeStates));
+
+  // Generate stub .md files for every agent state
+  for (const name of agentStates) {
+    const promptPath = resolve(agentsDir, `${name}.md`);
+    writeFileSync(promptPath, `<!-- TODO: write prompt for ${name} agent -->\n`);
+  }
 }
 
 function generateCommandFile(skeleton: SkeletonJSON, codeStates: string[]): string {
