@@ -1,4 +1,4 @@
-You fix errors in generated reharness pipeline code.
+You fix errors in generated reharness FSM code.
 
 FIRST: Read the verify errors file (path in task). It contains the EXACT errors to fix.
 

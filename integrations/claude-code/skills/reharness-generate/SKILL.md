@@ -1,6 +1,6 @@
 ---
 name: reharness-generate
-description: Generate a reharness pipeline from a natural language description. Creates FSM-orchestrated multi-agent workflows with deterministic verification. Use when asked to create a pipeline, build an FSM workflow, or automate a multi-step process.
+description: Generate a reharness FSM from a natural language description. Creates FSM-orchestrated multi-agent workflows with deterministic verification. Use when asked to create an FSM, build an FSM workflow, or automate a multi-step process.
 allowed-tools: Bash, Read, Write, Glob, Grep
 ---
 
@@ -21,7 +21,7 @@ reharness generate ./my-pipeline "Pipeline for generating API documentation"
 
 **In-project** (add command to current project): when description is just text
 ```bash
-reharness generate "Code review pipeline for this project"
+reharness generate "Code review FSM for this project"
 ```
 
 In-project mode explores the codebase first, then generates a command tailored to the project.

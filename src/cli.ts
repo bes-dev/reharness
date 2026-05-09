@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// Register tsx loader so we can import .ts files from .reharness/commands/ and pipeline.ts
+// Register tsx loader so we can import .ts files from .reharness/commands/ and legacy pipeline.ts
 import "tsx/esm";
 
 import { resolve, dirname } from "path";
@@ -56,13 +56,13 @@ async function main() {
 }
 
 function printUsage() {
-  console.log("reharness — Deterministic multi-agent pipeline framework\n");
+  console.log("reharness — Deterministic multi-agent FSM framework\n");
   console.log("Usage:");
   console.log("  reharness                        Interactive mode (TUI)");
   console.log("  reharness <command> [args...]     Run a command directly\n");
   console.log("Built-in commands:");
-  console.log("  generate [dir] <description>  Generate a pipeline (standalone or in-project)");
-  console.log("  evolve [--auto] [--interactive] Analyze logs, improve pipeline\n");
+  console.log("  generate [dir] <description>  Generate an FSM (standalone or in-project)");
+  console.log("  evolve [--auto] [--interactive] Analyze logs, improve FSM\n");
   console.log("Project structure:");
   console.log("  .reharness/commands/             Command files (auto-discovered)");
   console.log("  .reharness/agents/               Agent prompts (.md)");

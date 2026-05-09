@@ -1,6 +1,6 @@
 ---
 name: reharness
-description: Run reharness pipeline commands or decide whether to use FSM orchestration for a task. Activates when the task involves multi-step workflows, code generation with verification, or structured automation. Can generate new pipelines, run existing ones, or evolve them.
+description: Run reharness FSM commands or decide whether to use FSM orchestration for a task. Activates when the task involves multi-step workflows, code generation with verification, or structured automation. Can generate new FSMs, run existing FSMs, or evolve them.
 allowed-tools: Bash, Read, Write, Glob, Grep
 ---
 
@@ -29,8 +29,8 @@ reharness --help
 ```
 
 **Built-in:**
-- `reharness generate [dir] <description>` — create a pipeline
-- `reharness evolve [--auto]` — improve pipeline from logs
+- `reharness generate [dir] <description>` — create an FSM
+- `reharness evolve [--auto]` — improve FSM from logs
 
 **Project-specific** (from `.reharness/commands/`):
 ```bash

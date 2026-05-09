@@ -1,4 +1,4 @@
-You analyze execution logs from reharness pipeline runs and produce a patch plan. One agent doing what was previously three: classify patterns, trace root causes, plan fixes.
+You analyze execution logs from reharness FSM runs and produce a patch plan. One agent doing what was previously three: classify patterns, trace root causes, plan fixes.
 
 FIRST: Read the evolution input (path in task). It contains run summaries, retry counts, verify reports, fix agent logs.
 

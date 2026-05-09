@@ -1,22 +1,22 @@
 # reharness
 
-Deterministic multi-agent pipeline framework. Define pipelines as finite state machines — states, transitions, guards, events. Each state runs an LLM agent or deterministic code. Built-in meta-pipeline generates and evolves pipelines from natural language prompts.
+Deterministic multi-agent FSM framework. Define finite state machines — states, transitions, guards, events. Each state runs an LLM agent or deterministic code. Built-in meta-FSM generates and evolves FSMs from natural language prompts.
 
 ## Quick Start
 
 ```bash
-# Generate a pipeline for any domain
-reharness generate ./my-pipeline "Pipeline for generating React Native apps from a one-line idea"
+# Generate an FSM for any domain
+reharness generate ./my-fsm "FSM for generating React Native apps from a one-line idea"
 
 # Or generate a command for an existing project
 cd my-project
-reharness generate "Code review pipeline for this project"
+reharness generate "Code review FSM for this project"
 
-# Run your pipelines
+# Run your FSMs
 reharness              # Interactive TUI
 reharness build myapp  # Direct command
 
-# Improve pipelines from run history
+# Improve FSMs from run history
 reharness evolve
 ```
 
@@ -77,19 +77,19 @@ ctx.emit('message');                                 // Log to TUI
 ctx.status('text');                                  // Update TUI status bar
 ctx.retry('key');                                    // Increment retry counter
 ctx.retries('key');                                  // Read retry count
-ctx.config                                           // Pipeline config (read-only)
+ctx.config                                           // Config (read-only)
 ctx.data                                             // Shared state (persisted for resume)
 ```
 
 ## Built-in Commands
 
 ### `generate [dir] <description>`
-Generate a pipeline from a natural language prompt. Two modes:
-- **Standalone**: `reharness generate ./output "Pipeline for..."` — creates new pipeline in a directory
+Generate a FSM from a natural language prompt. Two modes:
+- **Standalone**: `reharness generate ./output "FSM for..."` — creates new FSM in a directory
 - **In-project**: `reharness generate "Review command for this project"` — explores codebase, generates command in current `.reharness/`
 
 ### `evolve [--auto] [--interactive]`
-Analyze run logs and improve the pipeline. Patches agent prompts, verify checks, scaffold, even the state graph.
+Analyze run logs and improve the FSM. Patches agent prompts, verify checks, scaffold, even the state graph.
 - `--auto`: enable auto-evolution after every run
 - `--interactive`: review and approve changes in tmux session with agent
 
@@ -101,7 +101,7 @@ Changes are git-versioned for easy rollback.
 reharness                          # Interactive TUI
 reharness <command> [args...]      # Direct command
 reharness --model <id>             # Override LLM model (e.g. anthropic/claude-sonnet-4-6)
-reharness <command> --resume       # Resume interrupted pipeline
+reharness <command> --resume       # Resume interrupted FSM
 ```
 
 ## Architecture
@@ -115,10 +115,10 @@ src/
 │   ├── tui-app.ts     # Interactive + direct TUI
 │   └── project.ts     # Auto-discover .reharness/commands/
 │
-├── meta/              # Pipeline generators (optional module)
+├── meta/              # FSM generators (optional module)
 │   ├── commands/      # /generate, /evolve
-│   ├── agents/        # Meta-pipeline agent prompts
-│   └── references/    # Design guide for pipeline generation
+│   ├── agents/        # Meta-FSM agent prompts
+│   └── references/    # Design guide for FSM generation
 │
 └── cli.ts             # Entry point (loads core + meta)
 ```
@@ -130,7 +130,7 @@ Import paths:
 
 ## Integrations
 
-Reharness works standalone via CLI, but also integrates into coding agents as a tool — letting them offload structured multi-step tasks into deterministic FSM pipelines.
+Reharness works standalone via CLI, but also integrates into coding agents as a tool — letting them offload structured multi-step tasks into deterministic FSMs.
 
 ### MCP Server
 
@@ -158,8 +158,8 @@ cp -r integrations/claude-code/skills/* .claude/skills/
 ```
 
 Three skills:
-- `/reharness-generate` — generate pipelines from natural language
-- `/reharness-evolve` — improve pipelines from run history
+- `/reharness-generate` — generate FSMs from natural language
+- `/reharness-evolve` — improve FSMs from run history
 - `/reharness` — auto-invoked by Claude when task is structured (FSM accelerator)
 
 ### Pi Coding Agent
@@ -174,7 +174,7 @@ Pi can then invoke `reharness generate/evolve/run` via bash tool when it recogni
 
 ## LLM Reference
 
-See [AGENTS.md](AGENTS.md) — documentation for LLMs creating commands, pipelines, and agent prompts.
+See [AGENTS.md](AGENTS.md) — documentation for LLMs creating commands, FSMs, and agent prompts.
 
 ## License
 

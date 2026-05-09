@@ -1,10 +1,10 @@
-# reharness: Designing Finite State Machine Pipelines
+# reharness: Designing Finite State Machines
 
-## What is a reharness pipeline?
+## What is a reharness FSM?
 
-A reharness pipeline is a **finite state machine (FSM) that accomplishes a task**. Each state in the FSM either runs an AI agent that uses tools (web search, file read/write, shell commands) to do part of the work, or runs deterministic code (compile, validate, transform).
+A reharness FSM is a **finite state machine (FSM) that accomplishes a task**. Each state in the FSM either runs an AI agent that uses tools (web search, file read/write, shell commands) to do part of the work, or runs deterministic code (compile, validate, transform).
 
-The pipeline **executes the task itself**. When a user says "research topic X", the pipeline SEARCHES the web, READS sources, ANALYZES content, and WRITES a report. When a user says "generate an app", the pipeline CREATES files, WRITES code, and VERIFIES it compiles. The FSM orchestrates execution — it is not a code generator unless the task is specifically about generating code.
+The machine **executes the task itself**. When a user says "research topic X", the FSM SEARCHES the web, READS sources, ANALYZES content, and WRITES a report. When a user says "generate an app", the FSM CREATES files, WRITES code, and VERIFIES it compiles. The FSM orchestrates execution — it is not a code generator unless the task is specifically about generating code.
 
 ## How FSMs work
 
@@ -43,7 +43,7 @@ The user describes what they want. Your job is to decompose it into a sequence o
 
 ## Key insight: agents USE tools to do the task
 
-An agent in a reharness pipeline is not a code writer (unless the task requires code). It's a worker with tools:
+An agent in a reharness FSM is not a code writer (unless the task requires code). It's a worker with tools:
 - `web search` — find information online
 - `read` / `write` / `edit` — work with files
 - `bash` — run commands
@@ -53,7 +53,7 @@ When the task is "research a topic", the search agent USES web search to find so
 
 When the task is "generate a mobile app", the code agent WRITES TypeScript files. The task is code generation, so the agent writes code.
 
-The pipeline always DOES the task. What the agents do depends on what the task IS.
+The machine always DOES the task. What the agents do depends on what the task IS.
 
 ## Cycles and iteration
 
@@ -67,7 +67,7 @@ This is natural for tasks that need iterative deepening: research (search until 
 
 ## Verification
 
-Every pipeline should have a verify state that checks the output deterministically. What counts as verification depends on the task:
+Every machine should have a verify state that checks the output deterministically. What counts as verification depends on the task:
 - Code: does it compile? does it pass tests?
 - Content: does it meet word count? are citations present?
 - Research: are there enough sources? is coverage sufficient?
@@ -86,7 +86,7 @@ Every pipeline should have a verify state that checks the output deterministical
 
 ```typescript
 interface StateContext<C> {
-  config: C;                          // Read-only pipeline config
+  config: C;                          // Read-only FSM config
   agent: (name: string, task: string, opts?: {model?: string}) => Promise<void>;
   interactive: (name: string, task: string, opts?: {model?: string}) => Promise<void>;
   shell: (cmd: string, label?: string) => boolean;  // true = exit 0

@@ -1,4 +1,4 @@
-You write a structured scope document for a reharness pipeline. The pipeline is an FSM that ACCOMPLISHES the user's task through AI agents with tools. It does not generate code unless the task specifically requires code generation.
+You write a structured scope document for a reharness FSM — a finite state machine that ACCOMPLISHES the user's task through AI agents with tools. It does not generate code unless the task specifically requires code generation.
 
 Read the research file (path in task). Then think deeply about the task and write a scope covering:
 
@@ -9,7 +9,7 @@ What does the user provide? What is the final result?
 What stages of work lead from input to output? Think from first principles — what must happen, in what order, and why? Each stage does part of the work using agents (with tools like web search, file I/O, shell commands) or deterministic code.
 
 ## 3. Constraints
-What ELIMINATES work? Every constraint simplifies the pipeline.
+What ELIMINATES work? Every constraint simplifies the FSM.
 
 ## 4. Artifacts
 What does each stage produce? Files, data, reports — whatever is needed for the next stage.

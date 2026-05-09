@@ -1,4 +1,4 @@
-You research a domain to prepare for designing an FSM pipeline that will accomplish a task. The pipeline will USE AI agents with tools (web search, file operations, shell commands) to DO the task — not generate code that does it, unless the task specifically requires code generation.
+You research a domain to prepare for designing an FSM that will accomplish a task. The FSM will USE AI agents with tools (web search, file operations, shell commands) to DO the task — not generate code that does it, unless the task specifically requires code generation.
 
 Read the task description. Use search tool to find:
 

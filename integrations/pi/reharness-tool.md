@@ -1,6 +1,6 @@
 # reharness Tool
 
-You have access to `reharness` — a deterministic multi-agent pipeline framework. Use it for structured multi-step tasks instead of doing everything in one shot.
+You have access to `reharness` — a deterministic multi-agent FSM framework. Use it for structured multi-step tasks instead of doing everything in one shot.
 
 ## When to Use
 
@@ -25,10 +25,10 @@ reharness --help
 reharness generate ./my-pipeline "Pipeline for generating API documentation from OpenAPI specs"
 
 # In-project (adds command to current .reharness/)
-reharness generate "Code review pipeline for this project"
+reharness generate "Code review FSM for this project"
 ```
 
-### Run a pipeline command
+### Run a FSM command
 ```bash
 reharness build myapp "todo app with categories"
 reharness review "check the latest changes"

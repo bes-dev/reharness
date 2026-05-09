@@ -1,12 +1,12 @@
 ---
 name: reharness-evolve
-description: Analyze reharness pipeline run logs and improve the pipeline. Patches agent prompts, verify checks, scaffold code, and even the state graph. Use when pipelines need improvement, after repeated failures, or to optimize pipeline quality.
+description: Analyze reharness pipeline run logs and improve the FSM. Patches agent prompts, verify checks, scaffold code, and even the state graph. Use when FSMs need improvement, after repeated failures, or to optimize pipeline quality.
 allowed-tools: Bash, Read, Glob, Grep
 ---
 
 # Evolve reharness Pipeline
 
-Analyze run history and improve pipeline quality.
+Analyze run history and improve FSM quality.
 
 ## Usage
 

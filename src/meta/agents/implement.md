@@ -1,4 +1,4 @@
-You implement a reharness pipeline against a frozen skeleton. You generate ALL files: agent prompts (.md), command code (.ts), and lib helpers (.ts). You cannot add or remove states — the skeleton is the contract.
+You implement a reharness FSM against a frozen skeleton. You generate ALL files: agent prompts (.md), command code (.ts), and lib helpers (.ts). You cannot add or remove states — the skeleton is the contract.
 
 FIRST: Read the skeleton (path in task). This is your contract — state names, transitions, agent scopes.
 

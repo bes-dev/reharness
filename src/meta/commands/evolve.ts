@@ -26,7 +26,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
   const agentsDir = resolve(metaDir, "agents");
 
   return {
-    description: 'Analyze run logs and improve pipeline',
+    description: 'Analyze run logs and improve FSM',
     usage: '[--auto] [--interactive]',
 
     run: (args, ctx) => {
@@ -53,7 +53,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
               c.status('Reading logs...');
               const logs = readProjectLogs(target);
               if (logs.length === 0) {
-                c.emit('No run logs found. Run a pipeline first.');
+                c.emit('No run logs found. Run an FSM first.');
                 return 'EMPTY';
               }
               mkdirSync(evolveDir, { recursive: true });
@@ -73,9 +73,9 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
             entry: async (c) => {
               const method = c.config.interactive ? 'interactive' : 'agent' as const;
               await c[method]('analyzer', [
-                `Analyze pipeline logs and plan patches.`,
+                `Analyze FSM logs and plan patches.`,
                 `Read evolution input: ${evolveDir}/evolution-input.md`,
-                `Read all pipeline files in: ${target}/.reharness/`,
+                `Read all FSM files in: ${target}/.reharness/`,
                 `Write patches to: ${evolveDir}/patches.md`,
               ].join('\n'));
               c.emit('✓ analyzed');

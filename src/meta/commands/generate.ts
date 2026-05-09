@@ -14,7 +14,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
   const referencesDir = resolve(metaDir, "references");
 
   return {
-    description: 'Generate a reharness pipeline from a prompt',
+    description: 'Generate a reharness FSM from a prompt',
     usage: '[output-dir] <description...>',
 
     run: (args, ctx) => {
@@ -71,8 +71,8 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
             entry: async (c) => {
               mkdirSync(genDir, { recursive: true });
               const context = c.config.projectMode
-                ? `Read the project exploration at: ${genDir}/explore-report.md\nGenerate a pipeline for THIS project.`
-                : `This is a standalone pipeline.`;
+                ? `Read the project exploration at: ${genDir}/explore-report.md\nGenerate an FSM for THIS project.`
+                : `This is a standalone FSM.`;
               await c.agent('research', [
                 `Research the domain for: "${description}"`,
                 context,
@@ -117,7 +117,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
               mkdirSync(resolve(reharnessDir, 'commands'), { recursive: true });
               mkdirSync(resolve(reharnessDir, 'lib'), { recursive: true });
               await c.agent('implement', [
-                `Implement the pipeline against the frozen skeleton.`,
+                `Implement the FSM against the frozen skeleton.`,
                 `Read skeleton: ${genDir}/skeleton.md`,
                 `Read scope: ${genDir}/scope.md`,
                 `Read research: ${genDir}/research.md`,
@@ -155,7 +155,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
             entry: async (c) => {
               c.retry('verify');
               await c.agent('fix', [
-                `Fix errors in the generated pipeline.`,
+                `Fix errors in the generated FSM.`,
                 `Read errors: ${errorsFile}`,
                 `Read skeleton: ${genDir}/skeleton.md`,
                 `Fix files in: ${reharnessDir}/`,
