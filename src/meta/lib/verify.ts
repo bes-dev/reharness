@@ -1,12 +1,15 @@
 import { execSync } from "child_process";
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { resolve } from "path";
+import type { SkeletonJSON } from "./skeleton-schema.js";
 
 export function verifyGenerated(targetDir: string): string[] {
   const errors: string[] = [];
 
   const commandsDir = resolve(targetDir, ".reharness", "commands");
   const agentsDir = resolve(targetDir, ".reharness", "agents");
+  const libDir = resolve(targetDir, ".reharness", "lib");
+  const skeletonFile = resolve(targetDir, ".reharness", "generate", "skeleton.json");
 
   // 1. Check .reharness/commands/ has at least one .ts file
   if (!existsSync(commandsDir)) {
@@ -35,7 +38,35 @@ export function verifyGenerated(targetDir: string): string[] {
     errors.push("## Missing directory\n`.reharness/agents/` does not exist");
   }
 
-  // 3. Check TypeScript compiles
+  // 3. Skeleton completeness — if skeleton.json exists, verify all promises are fulfilled
+  if (existsSync(skeletonFile)) {
+    try {
+      const skeleton: SkeletonJSON = JSON.parse(readFileSync(skeletonFile, "utf-8"));
+      const agentMdFiles = existsSync(agentsDir)
+        ? new Set(readdirSync(agentsDir).filter(f => f.endsWith(".md")).map(f => f.replace(".md", "")))
+        : new Set<string>();
+
+      for (const [name, state] of Object.entries(skeleton.states)) {
+        if (state.type === "agent") {
+          if (!agentMdFiles.has(name)) {
+            errors.push(`## Missing agent prompt for skeleton state\nState \`${name}\` is type "agent" but \`.reharness/agents/${name}.md\` does not exist`);
+          }
+        }
+      }
+
+      // Check code state stubs are filled (no TODO remaining)
+      const libFiles = existsSync(libDir) ? readdirSync(libDir).filter(f => f.endsWith(".ts")) : [];
+      for (const libFile of libFiles) {
+        const content = readFileSync(resolve(libDir, libFile), "utf-8");
+        const todoMatches = content.match(/\/\/\s*TODO/g);
+        if (todoMatches) {
+          errors.push(`## Unfilled code state stubs\n\`${libFile}\` has ${todoMatches.length} TODO stub(s) — code state logic not implemented`);
+        }
+      }
+    } catch {}
+  }
+
+  // 4. Check TypeScript compiles
   const tsconfig = resolve(targetDir, "tsconfig.json");
   if (existsSync(tsconfig)) {
     try {
@@ -46,7 +77,7 @@ export function verifyGenerated(targetDir: string): string[] {
     }
   }
 
-  // 4. Try to import each command and validate the FSM graph
+  // 5. Try to import each command and validate the FSM graph
   for (const cmdFile of commandFiles) {
     const fullPath = resolve(commandsDir, cmdFile);
     try {
