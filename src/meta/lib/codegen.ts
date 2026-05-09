@@ -7,9 +7,25 @@ import type { SkeletonJSON, SkeletonState, GuardedTransition } from "./skeleton-
  * No LLM involved. Pure JSON → TypeScript transformation.
  */
 export function generateFromSkeleton(skeleton: SkeletonJSON, reharnessDir: string): void {
+  const projectRoot = resolve(reharnessDir, "..");
   const commandPath = resolve(reharnessDir, "commands", `${skeleton.id}.ts`);
   const libPath = resolve(reharnessDir, "lib", `${skeleton.id}-states.ts`);
   const agentsDir = resolve(reharnessDir, "agents");
+
+  // Ensure project has package.json with ESM support (required for generated .ts imports)
+  const pkgPath = resolve(projectRoot, "package.json");
+  if (!existsSync(pkgPath)) {
+    writeFileSync(pkgPath, JSON.stringify({ name: skeleton.id, private: true, type: "module" }, null, 2) + "\n");
+  } else {
+    // Ensure existing package.json has "type": "module"
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      if (!pkg.type) {
+        pkg.type = "module";
+        writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+      }
+    } catch { /* corrupt package.json — leave it */ }
+  }
 
   mkdirSync(dirname(commandPath), { recursive: true });
   mkdirSync(dirname(libPath), { recursive: true });
