@@ -102,10 +102,14 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
           // ── Skeleton: FSM topology as JSON ──
           skeleton: {
             entry: async (c) => {
+              const existingSkeletonNote = existsSync(skeletonFile)
+                ? `Read EXISTING skeleton at: ${skeletonFile}\nUpdate it based on the request — add/modify states, don't recreate from scratch.`
+                : `Create a new skeleton.`;
               await c.agent('skeleton', [
                 `Design the FSM topology for: "${description}"`,
                 `Read scope at: ${genDir}/scope.md`,
                 `Read design principles at: ${referencesDir}/design-principles.md`,
+                existingSkeletonNote,
                 `Write skeleton JSON to: ${skeletonFile}`,
               ].join('\n'));
 
