@@ -20,8 +20,6 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
     run: (args, ctx) => {
       if (args.length === 0) { console.error('Usage: /generate [output-dir] <description...>'); return null; }
 
-      // If first arg looks like a path → standalone mode (new dir)
-      // Otherwise → project mode (generate into current .reharness/)
       let target: string;
       let description: string;
       let projectMode: boolean;
@@ -51,107 +49,88 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
 
         states: {
           // ── Project mode: explore codebase first ──
-
           explore: {
             entry: async (c) => {
               c.status('Exploring project...');
               mkdirSync(genDir, { recursive: true });
-
-              // Quick structural scan
               const scan = scanProject(target);
               writeFileSync(resolve(genDir, 'scan-report.md'), formatScanReport(target, scan));
-
-              // Deep exploration by agent
               await c.agent('explorer', [
                 `Explore this project to understand its codebase.`,
                 `Read the quick scan at: ${genDir}/scan-report.md`,
                 `The project root is: ${target}`,
                 `Write your analysis to: ${genDir}/explore-report.md`,
               ].join('\n'));
-              c.emit('✓ project explored');
+              c.emit('✓ explored');
             },
             on: 'research',
           },
 
-          // ── Research (both modes) ──
-
+          // ── Research domain ──
           research: {
             entry: async (c) => {
               mkdirSync(genDir, { recursive: true });
-              const contextNote = c.config.projectMode
-                ? `Read the project exploration at: ${genDir}/explore-report.md\nGenerate a pipeline command for THIS project.`
-                : `This is a standalone pipeline (no existing project).`;
+              const context = c.config.projectMode
+                ? `Read the project exploration at: ${genDir}/explore-report.md\nGenerate a pipeline for THIS project.`
+                : `This is a standalone pipeline.`;
               await c.agent('research', [
-                `Research the domain for building this pipeline:`,
-                `"${description}"`,
-                ``,
-                contextNote,
-                `Write your findings to: ${genDir}/research.md`,
+                `Research the domain for: "${description}"`,
+                context,
+                `Write findings to: ${genDir}/research.md`,
               ].join('\n'));
+              c.emit('✓ research');
             },
-            on: 'design',
+            on: 'scope',
           },
 
-          design: {
+          // ── Scope: structured spec (like PRD) ──
+          scope: {
             entry: async (c) => {
-              const contextNote = c.config.projectMode
-                ? `Read the project exploration at: ${genDir}/explore-report.md`
-                : '';
-              await c.agent('design', [
-                `Design an FSM pipeline for:`,
-                `"${description}"`,
-                ``,
-                `Read the design reference guide at: ${referencesDir}/pipeline-design-guide.md`,
+              await c.agent('scope', [
+                `Write the scope document for: "${description}"`,
                 `Read research at: ${genDir}/research.md`,
-                contextNote,
-                `Write design to: ${genDir}/design.md`,
-              ].filter(Boolean).join('\n'));
+                `Write scope to: ${genDir}/scope.md`,
+              ].join('\n'));
+              c.emit('✓ scope');
             },
-            on: 'generate_prompts',
+            on: 'skeleton',
           },
 
-          generate_prompts: {
+          // ── Skeleton: topology only (frozen contract) ──
+          skeleton: {
+            entry: async (c) => {
+              await c.agent('skeleton', [
+                `Design a minimal FSM topology for: "${description}"`,
+                `Read scope at: ${genDir}/scope.md`,
+                `Read design principles at: ${referencesDir}/design-principles.md`,
+                `Write skeleton to: ${genDir}/skeleton.md`,
+              ].join('\n'));
+              c.emit('✓ skeleton');
+            },
+            on: 'implement',
+          },
+
+          // ── Implement: all code + prompts against skeleton ──
+          implement: {
             entry: async (c) => {
               mkdirSync(resolve(reharnessDir, 'agents'), { recursive: true });
-              await c.agent('generate-prompts', [
-                `Generate agent prompt files for the pipeline.`,
-                `Read design: ${genDir}/design.md`,
-                `Write .md files to: ${reharnessDir}/agents/`,
-              ].join('\n'));
-            },
-            on: 'generate_pipeline',
-          },
-
-          generate_pipeline: {
-            entry: async (c) => {
               mkdirSync(resolve(reharnessDir, 'commands'), { recursive: true });
               mkdirSync(resolve(reharnessDir, 'lib'), { recursive: true });
-              await c.agent('generate-pipeline', [
-                `Generate the pipeline TypeScript code.`,
-                `Read design: ${genDir}/design.md`,
-                `Read agent prompts: ${reharnessDir}/agents/`,
-                `Write commands to: ${reharnessDir}/commands/`,
+              await c.agent('implement', [
+                `Implement the pipeline against the frozen skeleton.`,
+                `Read skeleton: ${genDir}/skeleton.md`,
+                `Read scope: ${genDir}/scope.md`,
+                `Read research: ${genDir}/research.md`,
+                `Write agent prompts to: ${reharnessDir}/agents/`,
+                `Write command code to: ${reharnessDir}/commands/`,
                 `Write lib helpers to: ${reharnessDir}/lib/ (if needed)`,
               ].join('\n'));
-            },
-            on: 'optimize',
-          },
-
-          optimize: {
-            entry: async (c) => {
-              c.status('Optimizing pipeline...');
-              await c.agent('optimizer', [
-                `Optimize the generated pipeline by merging redundant agents and states.`,
-                `Read pipeline code: ${reharnessDir}/commands/`,
-                `Read agent prompts: ${reharnessDir}/agents/`,
-                `Read design: ${genDir}/design.md`,
-                `Write optimization report to: ${genDir}/optimization-report.md`,
-              ].join('\n'));
-              c.emit('✓ optimization pass');
+              c.emit('✓ implemented');
             },
             on: 'verify',
           },
 
+          // ── Verify: deterministic checks ──
           verify: {
             entry: async (c) => {
               const errors = verifyGenerated(target);
@@ -160,7 +139,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
                 c.emit(`✗ ${errors.length} error(s)`);
                 return 'FAIL';
               }
-              c.emit('✓ all checks passed');
+              c.emit('✓ verified');
               return 'PASS';
             },
             on: {
@@ -178,7 +157,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
               await c.agent('fix', [
                 `Fix errors in the generated pipeline.`,
                 `Read errors: ${errorsFile}`,
-                `Read design: ${genDir}/design.md`,
+                `Read skeleton: ${genDir}/skeleton.md`,
                 `Fix files in: ${reharnessDir}/`,
               ].join('\n'));
             },

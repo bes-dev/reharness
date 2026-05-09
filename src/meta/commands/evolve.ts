@@ -24,10 +24,9 @@ function gitSnapshot(cwd: string, message: string): string | null {
 
 export function makeEvolveCommand(metaDir: string): CommandDefinition {
   const agentsDir = resolve(metaDir, "agents");
-  const referencesDir = resolve(metaDir, "references");
 
   return {
-    description: 'Analyze run logs and improve pipeline (prompts, verify, scaffold, graph)',
+    description: 'Analyze run logs and improve pipeline',
     usage: '[--auto] [--interactive]',
 
     run: (args, ctx) => {
@@ -40,7 +39,6 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
       const target = ctx.cwd;
       const evolveDir = resolve(target, '.reharness', 'evolve');
       const errorsFile = resolve(evolveDir, 'verify-errors.md');
-      const reportFile = resolve(evolveDir, 'evolve-report.md');
 
       return definePipeline({
         config: { target, autoMode, interactive },
@@ -52,178 +50,100 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
         states: {
           read_logs: {
             entry: async (c) => {
-              c.status('Reading run logs...');
+              c.status('Reading logs...');
               const logs = readProjectLogs(target);
               if (logs.length === 0) {
-                c.emit('✗ No run logs found. Run a pipeline first, then evolve.');
+                c.emit('No run logs found. Run a pipeline first.');
                 return 'EMPTY';
               }
               mkdirSync(evolveDir, { recursive: true });
-              const input = formatEvolutionInput(target, logs);
-              writeFileSync(resolve(evolveDir, 'evolution-input.md'), input);
-              c.data.runCount = logs.length;
-              c.data.reportLines = [`# Evolve Report\n`, `## Input`, `- Runs analyzed: ${logs.length}`, `- Retries found: ${Object.keys(logs.flatMap(l => Object.keys(l.retries)).reduce((a: any, k) => { a[k] = true; return a; }, {})).join(', ') || 'none'}`, ''];
-              c.emit(`✓ ${logs.length} run(s) analyzed`);
-            },
-            on: {
-              DONE: 'git_snapshot_before',
-              EMPTY: 'done_no_changes',
-            },
-          },
+              writeFileSync(resolve(evolveDir, 'evolution-input.md'), formatEvolutionInput(target, logs));
+              c.emit(`✓ ${logs.length} run(s)`);
 
-          git_snapshot_before: {
-            entry: async (c) => {
+              // Git snapshot before changes
               if (gitAvailable(target)) {
-                const sha = gitSnapshot(target, 'reharness evolve: pre-evolution snapshot');
-                if (sha) {
-                  c.data.beforeSha = sha;
-                  c.emit(`✓ git snapshot: ${sha.slice(0, 8)}`);
-                  c.data.reportLines.push('## Git', `- Pre-evolution commit: ${sha}`, '');
-                }
-              } else {
-                c.emit('⚠ not a git repo — changes cannot be rolled back');
-                c.data.reportLines.push('## Git', '- No git repo — rollback not available', '');
+                const sha = gitSnapshot(target, 'reharness evolve: pre-evolution');
+                if (sha) { c.data.beforeSha = sha; c.emit(`✓ git: ${sha.slice(0, 8)}`); }
               }
             },
-            on: 'classify',
+            on: { DONE: 'analyze', EMPTY: 'done_empty' },
           },
 
-          classify: {
+          analyze: {
             entry: async (c) => {
-              await c.agent('log-analyzer', [
-                `Analyze pipeline execution logs and classify patterns.`,
+              const method = c.config.interactive ? 'interactive' : 'agent' as const;
+              await c[method]('analyzer', [
+                `Analyze pipeline logs and plan patches.`,
                 `Read evolution input: ${evolveDir}/evolution-input.md`,
                 `Read all pipeline files in: ${target}/.reharness/`,
-                `Write classification to: ${evolveDir}/evolution-plan.md`,
-              ].join('\n'));
-              c.data.reportLines.push('## Classification', '- Patterns classified in: .reharness/evolve/evolution-plan.md', '');
-            },
-            on: {
-              DONE: [
-                { target: 'interactive_review', guard: (c) => c.config.interactive },
-                { target: 'plan_patches' },
-              ],
-            },
-          },
-
-          interactive_review: {
-            entry: async (c) => {
-              c.emit('Opening interactive session — review evolution plan with agent');
-              await c.interactive('evolution-planner', [
-                `Review the evolution plan with the user.`,
-                `The plan is at: ${evolveDir}/evolution-plan.md`,
-                `Current pipeline files are in: ${target}/.reharness/`,
-                `Pipeline design guide: ${referencesDir}/pipeline-design-guide.md`,
-                ``,
-                `Discuss the proposed changes with the user. They can:`,
-                `- Accept, reject, or modify individual patterns`,
-                `- Suggest additional improvements`,
-                `- Ask questions about the analysis`,
-                ``,
-                `After discussion, update ${evolveDir}/patches.md with the agreed patches.`,
-              ].join('\n'));
-              c.data.reportLines.push('## Interactive Review', '- User reviewed and approved patches in interactive session', '');
-            },
-            on: 'apply_patches',
-          },
-
-          plan_patches: {
-            entry: async (c) => {
-              await c.agent('evolution-planner', [
-                `Design specific patches for the pipeline.`,
-                `Read evolution plan: ${evolveDir}/evolution-plan.md`,
-                `Read pipeline design guide: ${referencesDir}/pipeline-design-guide.md`,
-                `Read all current pipeline files in: ${target}/.reharness/`,
                 `Write patches to: ${evolveDir}/patches.md`,
               ].join('\n'));
-              c.data.reportLines.push('## Patches Planned', '- See: .reharness/evolve/patches.md', '');
+              c.emit('✓ analyzed');
             },
-            on: 'apply_patches',
+            on: 'patch',
           },
 
-          apply_patches: {
+          patch: {
             entry: async (c) => {
-              await c.agent('patcher', [
-                `Apply patches to the pipeline.`,
-                `Read patches: ${evolveDir}/patches.md`,
-                `Apply changes to files in: ${target}/.reharness/`,
+              // Check if analyzer found anything to patch
+              const patchFile = resolve(evolveDir, 'patches.md');
+              if (!existsSync(patchFile)) {
+                c.emit('No patches needed.');
+                return 'SKIP';
+              }
+              const content = readFileSync(patchFile, 'utf-8');
+              if (content.includes('No changes needed') || content.includes('No Changes Needed')) {
+                c.emit('No patches needed.');
+                return 'SKIP';
+              }
+              await c.agent('fix', [
+                `Apply the patches described in: ${evolveDir}/patches.md`,
+                `Modify files in: ${target}/.reharness/`,
               ].join('\n'));
+              c.emit('✓ patched');
             },
-            on: 'verify_patches',
+            on: { DONE: 'verify', SKIP: 'done' },
           },
 
-          verify_patches: {
+          verify: {
             entry: async (c) => {
               const errors = verifyGenerated(target);
               if (errors.length > 0) {
-                writeFileSync(errorsFile, '# Evolve Verify Errors\n\n' + errors.join('\n\n') + '\n');
-                c.emit(`✗ ${errors.length} error(s) after patching`);
+                writeFileSync(errorsFile, '# Evolve Errors\n\n' + errors.join('\n\n') + '\n');
+                c.emit(`✗ ${errors.length} error(s)`);
                 return 'FAIL';
               }
-              c.emit('✓ patched pipeline verified');
-              c.data.reportLines.push('## Verification', '- All checks passed after patching', '');
+              c.emit('✓ verified');
+
+              // Git snapshot after changes
+              if (gitAvailable(target)) {
+                const sha = gitSnapshot(target, 'reharness evolve: post-evolution');
+                if (sha) {
+                  c.data.afterSha = sha;
+                  c.emit(`✓ git: ${sha.slice(0, 8)}`);
+                }
+              }
               return 'PASS';
             },
             on: {
-              PASS: 'git_snapshot_after',
+              PASS: 'done',
               FAIL: [
-                { target: 'fix_patches', guard: (c) => c.retries('verify') < 2 },
+                { target: 'fix', guard: (c) => c.retries('verify') < 2 },
                 { target: 'error' },
               ],
             },
           },
 
-          fix_patches: {
+          fix: {
             entry: async (c) => {
               c.retry('verify');
               await c.agent('fix', [
-                `Fix errors introduced by evolution patches.`,
+                `Fix errors from evolution.`,
                 `Read errors: ${errorsFile}`,
                 `Fix files in: ${target}/.reharness/`,
               ].join('\n'));
             },
-            on: 'verify_patches',
-          },
-
-          git_snapshot_after: {
-            entry: async (c) => {
-              if (gitAvailable(target)) {
-                const sha = gitSnapshot(target, 'reharness evolve: post-evolution changes');
-                if (sha) {
-                  c.data.afterSha = sha;
-                  c.emit(`✓ git commit: ${sha.slice(0, 8)}`);
-                  c.data.reportLines.push('## Git Commit', `- Post-evolution commit: ${sha}`);
-                  if (c.data.beforeSha) {
-                    c.data.reportLines.push(`- Rollback: git revert ${sha.slice(0, 8)}`, `- Diff: git diff ${(c.data.beforeSha as string).slice(0, 8)}..${sha.slice(0, 8)}`);
-                  }
-                  c.data.reportLines.push('');
-                }
-              }
-            },
-            on: 'finalize',
-          },
-
-          finalize: {
-            entry: async (c) => {
-              if (c.config.autoMode) {
-                const configPath = resolve(target, '.reharness', 'config.json');
-                let config: Record<string, any> = {};
-                if (existsSync(configPath)) {
-                  try { config = JSON.parse(readFileSync(configPath, "utf-8")); } catch {}
-                }
-                config.autoEvolve = true;
-                writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
-                c.emit('✓ auto-evolve enabled');
-                c.data.reportLines.push('## Auto-Evolve', '- Enabled: will analyze after each run', '');
-              }
-
-              // Write report
-              const lines = c.data.reportLines as string[];
-              lines.push('## Result', '- Status: SUCCESS');
-              writeFileSync(reportFile, lines.join('\n') + '\n');
-              c.emit(`✓ report: .reharness/evolve/evolve-report.md`);
-            },
-            on: 'done',
+            on: 'verify',
           },
 
           done: {
@@ -231,20 +151,15 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
             status: 'success',
             entry: async (c) => {
               c.emit('');
-              c.emit('PIPELINE EVOLVED');
-              c.emit(`  Report: .reharness/evolve/evolve-report.md`);
-              if (c.data.afterSha) {
-                c.emit(`  Rollback: git revert ${(c.data.afterSha as string).slice(0, 8)}`);
-              }
+              c.emit('EVOLVED');
+              if (c.data.afterSha) c.emit(`  Rollback: git revert ${(c.data.afterSha as string).slice(0, 8)}`);
+              c.emit(`  Details: .reharness/evolve/patches.md`);
             },
           },
 
-          done_no_changes: {
+          done_empty: {
             type: 'final',
             status: 'success',
-            entry: async (c) => {
-              c.emit('No logs to analyze. Nothing to evolve.');
-            },
           },
 
           error: { type: 'final', status: 'error' },
