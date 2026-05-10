@@ -16,7 +16,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
   const referencesDir = resolve(metaDir, "references");
 
   return {
-    description: 'Generate a reharness FSM from a prompt',
+    description: 'Generate or modify a reharness FSM',
     usage: '[output-dir] <description...>',
 
     run: (args, ctx) => {
@@ -42,20 +42,28 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
       const genDir = resolve(reharnessDir, 'generate');
       const skeletonsDir = resolve(reharnessDir, 'skeletons');
       const errorsFile = resolve(genDir, 'verify-errors.md');
-      const hasExistingHarness = existsSync(skeletonsDir);
 
       return definePipeline({
         config: { target, description, projectMode },
         agents: agentsDir,
         cwd: ctx.cwd,
         logsDir: resolve(genDir, 'logs'),
-        initial: hasExistingHarness ? 'explore' : (projectMode ? 'explore' : 'research'),
+        initial: 'triage',
 
         states: {
-          // ── Project mode: explore codebase first ──
-          explore: {
+          // ── Triage: decide NEW or EXISTING path ──
+          triage: {
             entry: async (c) => {
-              c.status('Exploring project...');
+              const hasSkeletons = existsSync(skeletonsDir) &&
+                readdirSync(skeletonsDir).some((f: string) => f.endsWith('.json'));
+
+              if (!hasSkeletons) {
+                c.emit('No existing harness → creating new');
+                return 'NEW';
+              }
+
+              // Has harness — let agent decide: is this a new command or edit?
+              c.emit('Existing harness found → triaging');
               mkdirSync(genDir, { recursive: true });
               const scan = scanProject(target);
               writeFileSync(resolve(genDir, 'scan-report.md'), formatScanReport(target, scan));
@@ -65,16 +73,47 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
                 `The project root is: ${target}`,
                 `Write your analysis to: ${genDir}/explore-report.md`,
               ].join('\n'));
-              c.emit('✓ explored');
+
+              // Agent decides: does this need a new FSM or modification of existing?
+              await c.agent('scope', [
+                `The user wants: "${description}"`,
+                `Read the existing harness at: ${reharnessDir}/`,
+                `Read existing skeletons in: ${skeletonsDir}/`,
+                `Read project exploration: ${genDir}/explore-report.md`,
+                ``,
+                `Decide: does this request need a NEW command (new FSM with new skeleton),`,
+                `or is it a MODIFICATION of existing commands (edit agents, lib, skeleton)?`,
+                ``,
+                `If NEW command: write "NEW" as the first line of your response file.`,
+                `If MODIFICATION: write "EXISTING" as the first line.`,
+                `Then explain your reasoning.`,
+                `Write to: ${genDir}/triage.md`,
+              ].join('\n'));
+
+              const triage = existsSync(resolve(genDir, 'triage.md'))
+                ? readFileSync(resolve(genDir, 'triage.md'), 'utf-8').trim()
+                : '';
+              if (triage.startsWith('NEW')) {
+                c.emit('→ new command');
+                return 'NEW';
+              }
+              c.emit('→ modify existing');
+              return 'EXISTING';
             },
-            on: 'research',
+            on: {
+              NEW: 'research',
+              EXISTING: 'investigate',
+            },
           },
 
-          // ── Research domain ──
+          // ══════════════════════════════════════════════
+          // NEW PATH: full create flow
+          // ══════════════════════════════════════════════
+
           research: {
             entry: async (c) => {
               mkdirSync(genDir, { recursive: true });
-              const context = c.config.projectMode
+              const context = existsSync(resolve(genDir, 'explore-report.md'))
                 ? `Read the project exploration at: ${genDir}/explore-report.md\nDesign an FSM for THIS project.`
                 : `This is a standalone FSM.`;
               await c.agent('research', [
@@ -84,11 +123,10 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
               ].join('\n'));
               c.emit('✓ research');
             },
-            on: 'scope',
+            on: 'scope_new',
           },
 
-          // ── Scope: structured spec ──
-          scope: {
+          scope_new: {
             entry: async (c) => {
               await c.agent('scope', [
                 `Write the scope document for: "${description}"`,
@@ -100,12 +138,12 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
             on: 'skeleton',
           },
 
-          // ── Skeleton: FSM topology as JSON ──
           skeleton: {
             entry: async (c) => {
               mkdirSync(skeletonsDir, { recursive: true });
-              const existingNote = hasExistingHarness
-                ? `Read ALL existing skeletons in: ${skeletonsDir}\nDecide: create a new command or update an existing one.`
+              const existingNote = existsSync(skeletonsDir) &&
+                readdirSync(skeletonsDir).some((f: string) => f.endsWith('.json'))
+                ? `Read existing skeletons in: ${skeletonsDir}\nYou are adding a NEW command alongside existing ones.`
                 : `Create a new skeleton.`;
               await c.agent('skeleton', [
                 `Design the FSM topology for: "${description}"`,
@@ -120,7 +158,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
                 ? readdirSync(skeletonsDir).filter((f: string) => f.endsWith('.json'))
                 : [];
               if (files.length === 0) {
-                c.emit('✗ no skeleton.json created');
+                c.emit('✗ no skeleton created');
                 return 'ERROR';
               }
               for (const file of files) {
@@ -128,36 +166,30 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
                   const skeleton: SkeletonJSON = JSON.parse(readFileSync(resolve(skeletonsDir, file), 'utf-8'));
                   const errs = validateSkeleton(skeleton);
                   if (errs.length > 0) {
-                    c.emit(`✗ ${file} invalid: ${errs[0]}`);
+                    c.emit(`✗ ${file}: ${errs[0]}`);
                     return 'ERROR';
                   }
                 } catch (e: any) {
-                  c.emit(`✗ ${file} parse error: ${e.message}`);
+                  c.emit(`✗ ${file}: ${e.message}`);
                   return 'ERROR';
                 }
               }
               c.emit(`✓ skeleton (${files.length} command(s))`);
             },
-            on: {
-              DONE: 'codegen',
-              ERROR: 'error',
-            },
+            on: { DONE: 'codegen', ERROR: 'error' },
           },
 
-          // ── Codegen: deterministic JSON → TypeScript (no LLM) ──
           codegen: {
             entry: async (c) => {
               mkdirSync(resolve(reharnessDir, 'agents'), { recursive: true });
               mkdirSync(resolve(reharnessDir, 'commands'), { recursive: true });
               mkdirSync(resolve(reharnessDir, 'lib'), { recursive: true });
-
               generateAllFromSkeletons(reharnessDir);
               c.emit('✓ codegen');
             },
             on: 'prompts',
           },
 
-          // ── Prompts: agent writes .md files + fills code state logic ──
           prompts: {
             entry: async (c) => {
               await c.agent('prompts', [
@@ -165,7 +197,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
                 `Read ALL skeleton JSONs in: ${skeletonsDir}/`,
                 `Read scope: ${genDir}/scope.md`,
                 `Read research: ${genDir}/research.md`,
-                `Read the generated command file in: ${reharnessDir}/commands/`,
+                `Read the generated command files in: ${reharnessDir}/commands/`,
                 `Read the lib stubs in: ${reharnessDir}/lib/`,
                 `Write agent prompts to: ${reharnessDir}/agents/`,
                 `Fill in code state logic in: ${reharnessDir}/lib/`,
@@ -175,7 +207,62 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
             on: 'verify',
           },
 
-          // ── Verify ──
+          // ══════════════════════════════════════════════
+          // EXISTING PATH: investigate + fix
+          // ══════════════════════════════════════════════
+
+          investigate: {
+            entry: async (c) => {
+              mkdirSync(genDir, { recursive: true });
+              // Snapshot skeletons before changes
+              if (existsSync(skeletonsDir)) {
+                const files = readdirSync(skeletonsDir).filter((f: string) => f.endsWith('.json'));
+                c.data.skeletonsBefore = Object.fromEntries(
+                  files.map((f: string) => [f, readFileSync(resolve(skeletonsDir, f), 'utf-8')])
+                );
+              }
+              await c.agent('investigator', [
+                `The user wants: "${description}"`,
+                `Read the existing harness at: ${reharnessDir}/`,
+                `Read existing skeletons in: ${skeletonsDir}/`,
+                `Read design principles: ${referencesDir}/design-principles.md`,
+                `Project root: ${target}`,
+                ``,
+                `Make the requested changes. Edit skeletons/*.json for structural changes,`,
+                `agents/*.md for prompt changes, lib/*.ts for code logic changes.`,
+                `Write a summary of changes to: ${genDir}/changes.md`,
+              ].join('\n'));
+              c.emit('✓ investigated');
+            },
+            on: 'regen',
+          },
+
+          regen: {
+            entry: async (c) => {
+              // Regenerate commands if any skeleton changed
+              if (existsSync(skeletonsDir)) {
+                const before = (c.data.skeletonsBefore || {}) as Record<string, string>;
+                let changed = false;
+                for (const file of readdirSync(skeletonsDir).filter((f: string) => f.endsWith('.json'))) {
+                  const now = readFileSync(resolve(skeletonsDir, file), 'utf-8');
+                  if (now !== before[file]) { changed = true; break; }
+                }
+                if (!before || Object.keys(before).length !== readdirSync(skeletonsDir).filter((f: string) => f.endsWith('.json')).length) {
+                  changed = true; // new skeleton added
+                }
+                if (changed) {
+                  generateAllFromSkeletons(reharnessDir);
+                  c.emit('✓ regenerated commands');
+                }
+              }
+            },
+            on: 'verify',
+          },
+
+          // ══════════════════════════════════════════════
+          // SHARED: verify ↔ fix → done/error
+          // ══════════════════════════════════════════════
+
           verify: {
             entry: async (c) => {
               const errors = verifyGenerated(target);
@@ -200,7 +287,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
             entry: async (c) => {
               c.retry('verify');
               await c.agent('fix', [
-                `Fix errors in the generated FSM.`,
+                `Fix errors in the FSM.`,
                 `Read errors: ${errorsFile}`,
                 `Read skeletons in: ${skeletonsDir}/`,
                 `Fix files in: ${reharnessDir}/`,
@@ -214,11 +301,10 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
             status: 'success',
             entry: async (c) => {
               c.emit('');
+              c.emit('FSM GENERATED');
               if (c.config.projectMode) {
-                c.emit('FSM GENERATED');
                 c.emit('  reharness    # see available commands');
               } else {
-                c.emit('FSM GENERATED');
                 c.emit(`  cd ${target} && reharness`);
               }
             },
