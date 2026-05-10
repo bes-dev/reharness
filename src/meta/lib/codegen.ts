@@ -104,8 +104,9 @@ function generateCommandFile(skeleton: SkeletonJSON, codeStates: string[]): stri
   lines.push(`  usage: ${JSON.stringify(skeleton.usage || '<args...>')},`);
   lines.push(``);
   lines.push(`  run: (args, ctx) => {`);
-  lines.push(`    const target = resolve(ctx.cwd, args[0] || '.');`);
-  lines.push(`    const input = args.slice(1).join(' ') || args.join(' ');`);
+  lines.push(`    const input = args.join(' ');`);
+  lines.push(`    const slug = input.replace(/[^a-zA-Z0-9\\u0400-\\u04FF]+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || '${skeleton.id}';`);
+  lines.push(`    const target = resolve(ctx.cwd, slug);`);
   lines.push(``);
   lines.push(`    return definePipeline({`);
   lines.push(`      config: { target, input },`);
