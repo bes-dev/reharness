@@ -1,6 +1,22 @@
-import { writeFileSync, readFileSync, appendFileSync, mkdirSync, existsSync } from "fs";
+import { writeFileSync, readFileSync, appendFileSync, mkdirSync, existsSync, readdirSync } from "fs";
 import { resolve, dirname } from "path";
 import type { SkeletonJSON, SkeletonState, GuardedTransition } from "./skeleton-schema.js";
+
+/**
+ * Generate commands from ALL skeletons in skeletons/ directory.
+ * Each skeleton.json → one command .ts file.
+ */
+export function generateAllFromSkeletons(reharnessDir: string): void {
+  const skeletonsDir = resolve(reharnessDir, "skeletons");
+  if (!existsSync(skeletonsDir)) return;
+
+  for (const file of readdirSync(skeletonsDir).filter(f => f.endsWith(".json"))) {
+    try {
+      const skeleton: SkeletonJSON = JSON.parse(readFileSync(resolve(skeletonsDir, file), "utf-8"));
+      generateFromSkeleton(skeleton, reharnessDir);
+    } catch { /* invalid JSON — skip */ }
+  }
+}
 
 /**
  * Deterministic: skeleton.json → .reharness/commands/<id>.ts + .reharness/lib/<id>-states.ts

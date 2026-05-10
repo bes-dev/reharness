@@ -26,12 +26,12 @@ agents/*.md   → agent prompts (edit freely)
 lib/*.ts      → code state logic (edit freely)
 ```
 
-**commands/*.ts is ALWAYS regenerated from skeleton.json.** If you edit it directly, your changes will be lost on next generate/evolve. So:
+**commands/*.ts is ALWAYS regenerated from skeletons/*.json.** If you edit it directly, your changes will be lost. So:
 
-- **Structural FSM changes** (add/remove state, change transition, add guard) → edit `skeleton.json`
+- **Structural FSM changes** (add/remove state, change transition, add guard) → edit `skeletons/<id>.json`
 - **Agent prompt changes** (improve instructions, add rules) → edit `agents/*.md`
 - **Code state logic changes** (fix verify logic, fix assess logic) → edit `lib/*.ts`
-- **NEVER** edit `commands/*.ts` — it will be regenerated from skeleton.json after your patches
+- **NEVER** edit `commands/*.ts` — it will be regenerated from skeletons after your patches
 
 ## What to write
 

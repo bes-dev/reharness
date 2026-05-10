@@ -54,6 +54,14 @@ FINALLY: Write the result as a JSON file.
 - At least one final state with status "success" and one with "error"
 - Guard format must be exactly `retries:key<N`
 
+## Multiple commands
+
+Skeletons live in `skeletons/` directory, one JSON per command. If existing skeletons are provided:
+- Read them to understand what commands already exist
+- Create a NEW skeleton file if the user wants a new command
+- Update an EXISTING skeleton if the user wants to modify a command
+- Filename = command id (e.g. `skeletons/deep-research.json`)
+
 ## Before writing JSON, reason about your design
 
 In your thinking, work through:

@@ -9,7 +9,7 @@ export function verifyGenerated(targetDir: string): string[] {
   const commandsDir = resolve(targetDir, ".reharness", "commands");
   const agentsDir = resolve(targetDir, ".reharness", "agents");
   const libDir = resolve(targetDir, ".reharness", "lib");
-  const skeletonFile = resolve(targetDir, ".reharness", "generate", "skeleton.json");
+  const skeletonsDir = resolve(targetDir, ".reharness", "skeletons");
 
   // 1. Check .reharness/commands/ has at least one .ts file
   if (!existsSync(commandsDir)) {
@@ -38,10 +38,14 @@ export function verifyGenerated(targetDir: string): string[] {
     errors.push("## Missing directory\n`.reharness/agents/` does not exist");
   }
 
-  // 3. Skeleton completeness — if skeleton.json exists, verify all promises are fulfilled
-  if (existsSync(skeletonFile)) {
+  // 3. Skeleton completeness — verify ALL skeletons in skeletons/ dir
+  const skeletonFiles = existsSync(skeletonsDir)
+    ? readdirSync(skeletonsDir).filter(f => f.endsWith(".json"))
+    : [];
+
+  for (const skFile of skeletonFiles) {
     try {
-      const skeleton: SkeletonJSON = JSON.parse(readFileSync(skeletonFile, "utf-8"));
+      const skeleton: SkeletonJSON = JSON.parse(readFileSync(resolve(skeletonsDir, skFile), "utf-8"));
       const agentMdFiles = existsSync(agentsDir)
         ? new Set(readdirSync(agentsDir).filter(f => f.endsWith(".md")).map(f => f.replace(".md", "")))
         : new Set<string>();
@@ -50,23 +54,24 @@ export function verifyGenerated(targetDir: string): string[] {
       for (const [name, state] of Object.entries(skeleton.states)) {
         if (state.type === "agent") {
           if (!agentMdFiles.has(name)) {
-            errors.push(`## Missing agent prompt\nState \`${name}\` requires \`.reharness/agents/${name}.md\``);
+            errors.push(`## Missing agent prompt\n[${skeleton.id}] state \`${name}\` requires \`agents/${name}.md\``);
           } else {
             const content = readFileSync(resolve(agentsDir, `${name}.md`), "utf-8");
             if (content.includes("<!-- TODO")) {
-              errors.push(`## Unfilled agent prompt\n\`agents/${name}.md\` is still a stub — write the actual prompt`);
+              errors.push(`## Unfilled agent prompt\n[${skeleton.id}] \`agents/${name}.md\` is still a stub`);
             }
           }
         }
       }
 
-      // Check code state stubs are filled (no TODO remaining)
-      const libFiles = existsSync(libDir) ? readdirSync(libDir).filter(f => f.endsWith(".ts")) : [];
-      for (const libFile of libFiles) {
-        const content = readFileSync(resolve(libDir, libFile), "utf-8");
+      // Check code state stubs are filled for this skeleton's lib
+      const libFile = `${skeleton.id}-states.ts`;
+      const libPath = resolve(libDir, libFile);
+      if (existsSync(libPath)) {
+        const content = readFileSync(libPath, "utf-8");
         const todoMatches = content.match(/\/\/\s*TODO/g);
         if (todoMatches) {
-          errors.push(`## Unfilled code state stub\n\`lib/${libFile}\` has ${todoMatches.length} TODO stub(s) — implement the logic`);
+          errors.push(`## Unfilled code state stub\n[${skeleton.id}] \`lib/${libFile}\` has ${todoMatches.length} TODO stub(s)`);
         }
       }
     } catch {}

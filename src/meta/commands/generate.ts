@@ -1,11 +1,11 @@
 import { definePipeline } from "../../core/fsm.js";
 import type { CommandDefinition } from "../../core/types.js";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import { scanProject, formatScanReport } from "../lib/scan.js";
 import { verifyGenerated } from "../lib/verify.js";
 import { validateSkeleton, type SkeletonJSON } from "../lib/skeleton-schema.js";
-import { generateFromSkeleton } from "../lib/codegen.js";
+import { generateAllFromSkeletons } from "../lib/codegen.js";
 
 function looksLikePath(s: string): boolean {
   return s.startsWith("./") || s.startsWith("/") || s.startsWith("../") || s.includes("/");
@@ -40,15 +40,16 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
 
       const reharnessDir = resolve(target, '.reharness');
       const genDir = resolve(reharnessDir, 'generate');
-      const skeletonFile = resolve(genDir, 'skeleton.json');
+      const skeletonsDir = resolve(reharnessDir, 'skeletons');
       const errorsFile = resolve(genDir, 'verify-errors.md');
+      const hasExistingHarness = existsSync(skeletonsDir);
 
       return definePipeline({
         config: { target, description, projectMode },
         agents: agentsDir,
         cwd: ctx.cwd,
         logsDir: resolve(genDir, 'logs'),
-        initial: projectMode ? 'explore' : 'research',
+        initial: hasExistingHarness ? 'explore' : (projectMode ? 'explore' : 'research'),
 
         states: {
           // ── Project mode: explore codebase first ──
@@ -102,35 +103,40 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
           // ── Skeleton: FSM topology as JSON ──
           skeleton: {
             entry: async (c) => {
-              const existingSkeletonNote = existsSync(skeletonFile)
-                ? `Read EXISTING skeleton at: ${skeletonFile}\nUpdate it based on the request — add/modify states, don't recreate from scratch.`
+              mkdirSync(skeletonsDir, { recursive: true });
+              const existingNote = hasExistingHarness
+                ? `Read ALL existing skeletons in: ${skeletonsDir}\nDecide: create a new command or update an existing one.`
                 : `Create a new skeleton.`;
               await c.agent('skeleton', [
                 `Design the FSM topology for: "${description}"`,
                 `Read scope at: ${genDir}/scope.md`,
                 `Read design principles at: ${referencesDir}/design-principles.md`,
-                existingSkeletonNote,
-                `Write skeleton JSON to: ${skeletonFile}`,
+                existingNote,
+                `Write skeleton JSON to: ${skeletonsDir}/<id>.json (filename = command id)`,
               ].join('\n'));
 
-              // Validate skeleton JSON
-              if (!existsSync(skeletonFile)) {
-                c.emit('✗ skeleton.json not created');
+              // Validate all skeletons
+              const files = existsSync(skeletonsDir)
+                ? readdirSync(skeletonsDir).filter((f: string) => f.endsWith('.json'))
+                : [];
+              if (files.length === 0) {
+                c.emit('✗ no skeleton.json created');
                 return 'ERROR';
               }
-              try {
-                const skeleton: SkeletonJSON = JSON.parse(readFileSync(skeletonFile, 'utf-8'));
-                const errors = validateSkeleton(skeleton);
-                if (errors.length > 0) {
-                  c.emit(`✗ skeleton invalid: ${errors[0]}`);
-                  writeFileSync(resolve(genDir, 'skeleton-errors.txt'), errors.join('\n'));
+              for (const file of files) {
+                try {
+                  const skeleton: SkeletonJSON = JSON.parse(readFileSync(resolve(skeletonsDir, file), 'utf-8'));
+                  const errs = validateSkeleton(skeleton);
+                  if (errs.length > 0) {
+                    c.emit(`✗ ${file} invalid: ${errs[0]}`);
+                    return 'ERROR';
+                  }
+                } catch (e: any) {
+                  c.emit(`✗ ${file} parse error: ${e.message}`);
                   return 'ERROR';
                 }
-                c.emit('✓ skeleton');
-              } catch (e: any) {
-                c.emit(`✗ skeleton JSON parse error: ${e.message}`);
-                return 'ERROR';
               }
+              c.emit(`✓ skeleton (${files.length} command(s))`);
             },
             on: {
               DONE: 'codegen',
@@ -145,8 +151,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
               mkdirSync(resolve(reharnessDir, 'commands'), { recursive: true });
               mkdirSync(resolve(reharnessDir, 'lib'), { recursive: true });
 
-              const skeleton: SkeletonJSON = JSON.parse(readFileSync(skeletonFile, 'utf-8'));
-              generateFromSkeleton(skeleton, reharnessDir);
+              generateAllFromSkeletons(reharnessDir);
               c.emit('✓ codegen');
             },
             on: 'prompts',
@@ -157,7 +162,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
             entry: async (c) => {
               await c.agent('prompts', [
                 `Write agent prompts and code state logic for the FSM.`,
-                `Read skeleton JSON: ${skeletonFile}`,
+                `Read ALL skeleton JSONs in: ${skeletonsDir}/`,
                 `Read scope: ${genDir}/scope.md`,
                 `Read research: ${genDir}/research.md`,
                 `Read the generated command file in: ${reharnessDir}/commands/`,
@@ -197,7 +202,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
               await c.agent('fix', [
                 `Fix errors in the generated FSM.`,
                 `Read errors: ${errorsFile}`,
-                `Read skeleton: ${skeletonFile}`,
+                `Read skeletons in: ${skeletonsDir}/`,
                 `Fix files in: ${reharnessDir}/`,
               ].join('\n'));
             },

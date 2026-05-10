@@ -1,12 +1,11 @@
 import { definePipeline } from "../../core/fsm.js";
 import type { CommandDefinition } from "../../core/types.js";
 import { execFileSync } from "child_process";
-import { writeFileSync, mkdirSync, existsSync, readFileSync } from "fs";
+import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync } from "fs";
 import { resolve } from "path";
 import { writeInvestigationBrief } from "../lib/logs.js";
 import { verifyGenerated } from "../lib/verify.js";
-import { validateSkeleton, type SkeletonJSON } from "../lib/skeleton-schema.js";
-import { generateFromSkeleton } from "../lib/codegen.js";
+import { generateAllFromSkeletons } from "../lib/codegen.js";
 
 function gitAvailable(cwd: string): boolean {
   try {
@@ -39,7 +38,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
       const briefFile = resolve(evolveDir, 'investigation-brief.md');
       const patchesFile = resolve(evolveDir, 'patches.md');
       const errorsFile = resolve(evolveDir, 'verify-errors.md');
-      const skeletonFile = resolve(reharnessDir, 'generate', 'skeleton.json');
+      const skeletonsDir = resolve(reharnessDir, 'skeletons');
 
       return definePipeline({
         config: { target, interactive },
@@ -72,8 +71,12 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
           investigate: {
             entry: async (c) => {
               // Snapshot skeleton.json before investigation to detect changes
-              if (existsSync(skeletonFile)) {
-                c.data.skeletonBefore = readFileSync(skeletonFile, 'utf-8');
+              // Snapshot all skeletons before investigation
+              if (existsSync(skeletonsDir)) {
+                const files = readdirSync(skeletonsDir).filter((f: string) => f.endsWith('.json'));
+                c.data.skeletonsBefore = Object.fromEntries(
+                  files.map(f => [f, readFileSync(resolve(skeletonsDir, f), 'utf-8')])
+                );
               }
 
               const method = c.config.interactive ? 'interactive' : 'agent' as const;
@@ -106,26 +109,21 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
               await c.agent('fix', [
                 `Apply the patches described in: ${patchesFile}`,
                 `Modify files in: ${reharnessDir}/`,
-                `IMPORTANT: for structural FSM changes, edit skeleton.json not commands/*.ts`,
+                `IMPORTANT: for structural FSM changes, edit skeletons/*.json not commands/*.ts`,
               ].join('\n'));
               c.emit('✓ patched');
 
-              // If skeleton.json changed, regenerate command .ts from it
-              if (existsSync(skeletonFile)) {
-                const skeletonNow = readFileSync(skeletonFile, 'utf-8');
-                if (skeletonNow !== c.data.skeletonBefore) {
-                  try {
-                    const skeleton: SkeletonJSON = JSON.parse(skeletonNow);
-                    const errors = validateSkeleton(skeleton);
-                    if (errors.length > 0) {
-                      c.emit(`✗ skeleton invalid after patch: ${errors[0]}`);
-                      return 'DONE'; // let verify catch it
-                    }
-                    generateFromSkeleton(skeleton, reharnessDir);
-                    c.emit('✓ regenerated command from updated skeleton');
-                  } catch (e: any) {
-                    c.emit(`✗ skeleton parse error: ${e.message}`);
-                  }
+              // If any skeleton changed, regenerate all commands
+              if (existsSync(skeletonsDir)) {
+                const before = (c.data.skeletonsBefore || {}) as Record<string, string>;
+                let changed = false;
+                for (const file of readdirSync(skeletonsDir).filter((f: string) => f.endsWith('.json'))) {
+                  const now = readFileSync(resolve(skeletonsDir, file), 'utf-8');
+                  if (now !== before[file]) { changed = true; break; }
+                }
+                if (changed) {
+                  generateAllFromSkeletons(reharnessDir);
+                  c.emit('✓ regenerated commands from updated skeletons');
                 }
               }
             },
