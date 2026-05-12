@@ -17,11 +17,14 @@ export interface SkeletonJSON {
   states: Record<string, SkeletonState>;
 }
 
+const RESERVED_IDS = new Set(["generate", "evolve"]);
+
 export function validateSkeleton(skeleton: SkeletonJSON): string[] {
   const errors: string[] = [];
   const stateNames = new Set(Object.keys(skeleton.states));
 
   if (!skeleton.id) errors.push("Missing 'id'");
+  else if (RESERVED_IDS.has(skeleton.id)) errors.push(`'${skeleton.id}' is a reserved built-in command name`);
   if (!skeleton.description) errors.push("Missing 'description'");
   if (!skeleton.usage) errors.push("Missing 'usage'");
   if (!skeleton.initial) errors.push("Missing 'initial'");

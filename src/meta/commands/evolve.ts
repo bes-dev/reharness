@@ -1,11 +1,11 @@
 import { definePipeline } from "../../core/fsm.js";
 import type { CommandDefinition } from "../../core/types.js";
 import { execFileSync } from "child_process";
-import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync } from "fs";
+import { writeFileSync, mkdirSync, existsSync, readFileSync } from "fs";
 import { resolve } from "path";
 import { writeInvestigationBrief } from "../lib/logs.js";
 import { verifyGenerated } from "../lib/verify.js";
-import { generateAllFromSkeletons } from "../lib/codegen.js";
+import { snapshotSkeletons, regenIfChanged } from "../lib/skeleton-utils.js";
 
 function gitAvailable(cwd: string): boolean {
   try {
@@ -70,14 +70,7 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
           // ── Investigate: agent explores freely ──
           investigate: {
             entry: async (c) => {
-              // Snapshot skeleton.json before investigation to detect changes
-              // Snapshot all skeletons before investigation
-              if (existsSync(skeletonsDir)) {
-                const files = readdirSync(skeletonsDir).filter((f: string) => f.endsWith('.json'));
-                c.data.skeletonsBefore = Object.fromEntries(
-                  files.map(f => [f, readFileSync(resolve(skeletonsDir, f), 'utf-8')])
-                );
-              }
+              c.data.skeletonsBefore = snapshotSkeletons(skeletonsDir);
 
               const method = c.config.interactive ? 'interactive' : 'agent' as const;
               await c[method]('investigator', [
@@ -113,18 +106,8 @@ export function makeEvolveCommand(metaDir: string): CommandDefinition {
               ].join('\n'));
               c.emit('✓ patched');
 
-              // If any skeleton changed, regenerate all commands
-              if (existsSync(skeletonsDir)) {
-                const before = (c.data.skeletonsBefore || {}) as Record<string, string>;
-                let changed = false;
-                for (const file of readdirSync(skeletonsDir).filter((f: string) => f.endsWith('.json'))) {
-                  const now = readFileSync(resolve(skeletonsDir, file), 'utf-8');
-                  if (now !== before[file]) { changed = true; break; }
-                }
-                if (changed) {
-                  generateAllFromSkeletons(reharnessDir);
-                  c.emit('✓ regenerated commands from updated skeletons');
-                }
+              if (regenIfChanged(skeletonsDir, reharnessDir, (c.data.skeletonsBefore || {}) as Record<string, string>)) {
+                c.emit('✓ regenerated commands from updated skeletons');
               }
             },
             on: { DONE: 'verify', SKIP: 'done' },

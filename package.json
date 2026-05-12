@@ -24,7 +24,7 @@
     "reharness-mcp": "dist/integrations/mcp-server.js"
   },
   "scripts": {
-    "build": "tsc && cp -r src/meta/agents dist/meta/agents && cp -r src/meta/references dist/meta/references && chmod +x dist/cli.js dist/integrations/mcp-server.js",
+    "build": "tsc && rm -rf dist/meta/agents dist/meta/references && cp -r src/meta/agents dist/meta/agents && cp -r src/meta/references dist/meta/references && chmod +x dist/cli.js dist/integrations/mcp-server.js",
     "dev": "tsc --watch",
     "prepublishOnly": "npm run build"
   },

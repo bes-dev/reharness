@@ -1,4 +1,4 @@
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { resolve } from "path";
 import type { SkeletonJSON } from "./skeleton-schema.js";
@@ -74,14 +74,16 @@ export function verifyGenerated(targetDir: string): string[] {
           errors.push(`## Unfilled code state stub\n[${skeleton.id}] \`lib/${libFile}\` has ${todoMatches.length} TODO stub(s)`);
         }
       }
-    } catch {}
+    } catch (e: any) {
+      errors.push(`## Invalid skeleton\n\`${skFile}\`: ${e.message}`);
+    }
   }
 
   // 4. Check TypeScript compiles
   const tsconfig = resolve(targetDir, "tsconfig.json");
   if (existsSync(tsconfig)) {
     try {
-      execSync("npx tsc --noEmit 2>&1", { cwd: targetDir, encoding: "utf-8", timeout: 30000 });
+      execFileSync("npx", ["tsc", "--noEmit"], { cwd: targetDir, encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
     } catch (err: any) {
       const out = err.stdout || err.stderr || err.message;
       errors.push(`## TypeScript errors\n\`\`\`\n${out.slice(0, 2000)}\n\`\`\``);
@@ -91,16 +93,16 @@ export function verifyGenerated(targetDir: string): string[] {
   // 5. Try to import each command and validate the FSM graph
   for (const cmdFile of commandFiles) {
     const fullPath = resolve(commandsDir, cmdFile);
+    const script = [
+      `import cmd from '${fullPath}';`,
+      `if (!cmd?.run) { console.error('No default export with run()'); process.exit(1); }`,
+      `const p = cmd.run(['test-slug', 'test', 'description'], { root: '${targetDir}', agents: '${agentsDir}', cwd: '${targetDir}' });`,
+      `if (!p) { console.error('run() returned null'); process.exit(1); }`,
+      `console.log('OK: ' + Object.keys(p.states).join(', '));`,
+    ].join('\n');
     try {
-      execSync(
-        `node --import tsx/esm -e "
-          import cmd from '${fullPath}';
-          if (!cmd?.run) { console.error('No default export with run()'); process.exit(1); }
-          const p = cmd.run(['test-slug', 'test', 'description'], { root: '${targetDir}', agents: '${agentsDir}', cwd: '${targetDir}' });
-          if (!p) { console.error('run() returned null'); process.exit(1); }
-          console.log('OK: ' + Object.keys(p.states).join(', '));
-        "`,
-        { encoding: "utf-8", timeout: 10000 },
+      execFileSync("node", ["--import", "tsx/esm", "-e", script],
+        { encoding: "utf-8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"] },
       );
     } catch (err: any) {
       const out = err.stdout || err.stderr || err.message;

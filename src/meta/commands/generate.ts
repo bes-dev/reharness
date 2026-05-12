@@ -6,6 +6,7 @@ import { scanProject, formatScanReport } from "../lib/scan.js";
 import { verifyGenerated } from "../lib/verify.js";
 import { validateSkeleton, type SkeletonJSON } from "../lib/skeleton-schema.js";
 import { generateAllFromSkeletons } from "../lib/codegen.js";
+import { snapshotSkeletons, regenIfChanged } from "../lib/skeleton-utils.js";
 
 function looksLikePath(s: string): boolean {
   return s.startsWith("./") || s.startsWith("/") || s.startsWith("../") || s.includes("/");
@@ -42,6 +43,16 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
       const genDir = resolve(reharnessDir, 'generate');
       const skeletonsDir = resolve(reharnessDir, 'skeletons');
       const errorsFile = resolve(genDir, 'verify-errors.md');
+      const reviewFile = resolve(genDir, 'review.md');
+
+      // Ensure directories exist once upfront
+      const ensureDirs = () => {
+        mkdirSync(genDir, { recursive: true });
+        mkdirSync(skeletonsDir, { recursive: true });
+        mkdirSync(resolve(reharnessDir, 'agents'), { recursive: true });
+        mkdirSync(resolve(reharnessDir, 'commands'), { recursive: true });
+        mkdirSync(resolve(reharnessDir, 'lib'), { recursive: true });
+      };
 
       return definePipeline({
         config: { target, description, projectMode },
@@ -54,17 +65,15 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
           // ── Triage: decide NEW or EXISTING path ──
           triage: {
             entry: async (c) => {
-              const hasSkeletons = existsSync(skeletonsDir) &&
-                readdirSync(skeletonsDir).some((f: string) => f.endsWith('.json'));
+              ensureDirs();
+              const hasSkeletons = readdirSync(skeletonsDir).some((f: string) => f.endsWith('.json'));
 
               if (!hasSkeletons) {
                 c.emit('No existing harness → creating new');
                 return 'NEW';
               }
 
-              // Has harness — let agent decide: is this a new command or edit?
               c.emit('Existing harness found → triaging');
-              mkdirSync(genDir, { recursive: true });
               const scan = scanProject(target);
               writeFileSync(resolve(genDir, 'scan-report.md'), formatScanReport(target, scan));
               await c.agent('explorer', [
@@ -74,7 +83,6 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
                 `Write your analysis to: ${genDir}/explore-report.md`,
               ].join('\n'));
 
-              // Agent decides: does this need a new FSM or modification of existing?
               await c.agent('scope', [
                 `The user wants: "${description}"`,
                 `Read the existing harness at: ${reharnessDir}/`,
@@ -112,7 +120,6 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
 
           research: {
             entry: async (c) => {
-              mkdirSync(genDir, { recursive: true });
               const context = existsSync(resolve(genDir, 'explore-report.md'))
                 ? `Read the project exploration at: ${genDir}/explore-report.md\nDesign an FSM for THIS project.`
                 : `This is a standalone FSM.`;
@@ -140,9 +147,8 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
 
           skeleton: {
             entry: async (c) => {
-              mkdirSync(skeletonsDir, { recursive: true });
-              const existingNote = existsSync(skeletonsDir) &&
-                readdirSync(skeletonsDir).some((f: string) => f.endsWith('.json'))
+              const existingSkeletons = readdirSync(skeletonsDir).filter((f: string) => f.endsWith('.json'));
+              const existingNote = existingSkeletons.length > 0
                 ? `Read existing skeletons in: ${skeletonsDir}\nYou are adding a NEW command alongside existing ones.`
                 : `Create a new skeleton.`;
               await c.agent('skeleton', [
@@ -153,10 +159,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
                 `Write skeleton JSON to: ${skeletonsDir}/<id>.json (filename = command id)`,
               ].join('\n'));
 
-              // Validate all skeletons
-              const files = existsSync(skeletonsDir)
-                ? readdirSync(skeletonsDir).filter((f: string) => f.endsWith('.json'))
-                : [];
+              const files = readdirSync(skeletonsDir).filter((f: string) => f.endsWith('.json'));
               if (files.length === 0) {
                 c.emit('✗ no skeleton created');
                 return 'ERROR';
@@ -181,9 +184,6 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
 
           codegen: {
             entry: async (c) => {
-              mkdirSync(resolve(reharnessDir, 'agents'), { recursive: true });
-              mkdirSync(resolve(reharnessDir, 'commands'), { recursive: true });
-              mkdirSync(resolve(reharnessDir, 'lib'), { recursive: true });
               generateAllFromSkeletons(reharnessDir);
               c.emit('✓ codegen');
             },
@@ -192,6 +192,7 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
 
           prompts: {
             entry: async (c) => {
+              const hasReview = existsSync(reviewFile);
               await c.agent('prompts', [
                 `Write agent prompts and code state logic for the FSM.`,
                 `Read ALL skeleton JSONs in: ${skeletonsDir}/`,
@@ -201,26 +202,73 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
                 `Read the lib stubs in: ${reharnessDir}/lib/`,
                 `Write agent prompts to: ${reharnessDir}/agents/`,
                 `Fill in code state logic in: ${reharnessDir}/lib/`,
+                ...(hasReview ? [``, `IMPORTANT: A review found issues. Read: ${reviewFile}`, `Address ALL issues listed there.`] : []),
               ].join('\n'));
               c.emit('✓ prompts');
             },
-            on: 'verify',
+            on: 'review',
+          },
+
+          review: {
+            entry: async (c) => {
+              await c.agent('review', [
+                `Review the generated FSM against its specification.`,
+                `Read the scope (spec): ${genDir}/scope.md`,
+                `Read ALL skeletons in: ${skeletonsDir}/`,
+                `Read ALL agent prompts in: ${reharnessDir}/agents/`,
+                `Read ALL code state logic in: ${reharnessDir}/lib/`,
+                `Write your review report to: ${reviewFile}`,
+              ].join('\n'));
+              const report = existsSync(reviewFile)
+                ? readFileSync(reviewFile, 'utf-8').trim()
+                : '';
+              if (report.startsWith('PASS')) {
+                c.emit('✓ review passed');
+                return 'PASS';
+              }
+              c.emit('✗ review found issues');
+              return 'FAIL';
+            },
+            on: {
+              PASS: 'verify',
+              FAIL: [
+                { target: 'review_fix', guard: (c) => c.retries('review') < 2 },
+                { target: 'verify' },
+              ],
+            },
+          },
+
+          review_fix: {
+            entry: async (c) => {
+              c.retry('review');
+              c.data.skeletonsBefore = snapshotSkeletons(skeletonsDir);
+              await c.agent('investigator', [
+                `A review found issues with the generated FSM. Fix them.`,
+                `Read the review report: ${reviewFile}`,
+                `Read the scope (spec): ${genDir}/scope.md`,
+                `Read existing skeletons in: ${skeletonsDir}/`,
+                `Read design principles: ${referencesDir}/design-principles.md`,
+                `Project root: ${target}`,
+                ``,
+                `Fix the issues from the review. Edit skeletons/*.json for structural changes,`,
+                `agents/*.md for prompt changes, lib/*.ts for code logic changes.`,
+                `Write a summary of changes to: ${genDir}/changes.md`,
+              ].join('\n'));
+              if (regenIfChanged(skeletonsDir, reharnessDir, c.data.skeletonsBefore as Record<string, string>)) {
+                c.emit('✓ regenerated commands after review fix');
+              }
+              c.emit('✓ review issues fixed');
+            },
+            on: 'review',
           },
 
           // ══════════════════════════════════════════════
-          // EXISTING PATH: investigate + fix
+          // EXISTING PATH: investigate → regen → verify
           // ══════════════════════════════════════════════
 
           investigate: {
             entry: async (c) => {
-              mkdirSync(genDir, { recursive: true });
-              // Snapshot skeletons before changes
-              if (existsSync(skeletonsDir)) {
-                const files = readdirSync(skeletonsDir).filter((f: string) => f.endsWith('.json'));
-                c.data.skeletonsBefore = Object.fromEntries(
-                  files.map((f: string) => [f, readFileSync(resolve(skeletonsDir, f), 'utf-8')])
-                );
-              }
+              c.data.skeletonsBefore = snapshotSkeletons(skeletonsDir);
               await c.agent('investigator', [
                 `The user wants: "${description}"`,
                 `Read the existing harness at: ${reharnessDir}/`,
@@ -239,21 +287,8 @@ export function makeGenerateCommand(metaDir: string): CommandDefinition {
 
           regen: {
             entry: async (c) => {
-              // Regenerate commands if any skeleton changed
-              if (existsSync(skeletonsDir)) {
-                const before = (c.data.skeletonsBefore || {}) as Record<string, string>;
-                let changed = false;
-                for (const file of readdirSync(skeletonsDir).filter((f: string) => f.endsWith('.json'))) {
-                  const now = readFileSync(resolve(skeletonsDir, file), 'utf-8');
-                  if (now !== before[file]) { changed = true; break; }
-                }
-                if (!before || Object.keys(before).length !== readdirSync(skeletonsDir).filter((f: string) => f.endsWith('.json')).length) {
-                  changed = true; // new skeleton added
-                }
-                if (changed) {
-                  generateAllFromSkeletons(reharnessDir);
-                  c.emit('✓ regenerated commands');
-                }
+              if (regenIfChanged(skeletonsDir, reharnessDir, c.data.skeletonsBefore as Record<string, string>)) {
+                c.emit('✓ regenerated commands');
               }
             },
             on: 'verify',
