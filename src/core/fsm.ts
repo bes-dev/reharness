@@ -185,36 +185,53 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
 
       agent: async (name, task, opts?) => {
         if (signal?.aborted) throw new Error("Aborted");
-        const promptFile = resolve(agentsDir, `${name}.md`);
-        if (!existsSync(promptFile)) throw new Error(`Agent prompt not found: ${promptFile}`);
-
         stepCounter++;
         const padded = String(stepCounter).padStart(2, "0");
-        const r = await runAgentProcess({
-          prompt: promptFile, task, cwd,
-          onLine: emit, onStatus,
-          logFile: resolve(runDir, `${padded}-${name}.md`),
-          piBinary, piModel: opts?.model || piModel, signal,
-        });
-        if (signal?.aborted) throw new Error("Aborted");
-        if (r.exitCode !== 0) throw new Error(`Agent "${name}" failed (exit ${r.exitCode})`);
+
+        if (options?.agentRuntime) {
+          await options.agentRuntime.runAgent(name, task, {
+            model: opts?.model || piModel,
+            logFile: resolve(runDir, `${padded}-${name}.md`),
+            onLine: emit, onStatus, signal,
+          });
+        } else {
+          // Legacy: Pi subprocess
+          const promptFile = resolve(agentsDir, `${name}.md`);
+          if (!existsSync(promptFile)) throw new Error(`Agent prompt not found: ${promptFile}`);
+          const r = await runAgentProcess({
+            prompt: promptFile, task, cwd,
+            onLine: emit, onStatus,
+            logFile: resolve(runDir, `${padded}-${name}.md`),
+            piBinary, piModel: opts?.model || piModel, signal,
+          });
+          if (signal?.aborted) throw new Error("Aborted");
+          if (r.exitCode !== 0) throw new Error(`Agent "${name}" failed (exit ${r.exitCode})`);
+        }
         emit(`✓ ${name}`);
       },
 
       interactive: async (name, task, opts?) => {
         if (signal?.aborted) throw new Error("Aborted");
-        const promptFile = resolve(agentsDir, `${name}.md`);
-        if (!existsSync(promptFile)) throw new Error(`Agent prompt not found: ${promptFile}`);
-
         stepCounter++;
         const padded = String(stepCounter).padStart(2, "0");
-        await runInteractiveProcess({
-          prompt: promptFile, task, cwd,
-          onLine: emit, onStatus,
-          logFile: resolve(runDir, `${padded}-${name}-interactive.md`),
-          piBinary, piModel: opts?.model || piModel, signal,
-        });
-        if (signal?.aborted) throw new Error("Aborted");
+
+        if (options?.agentRuntime) {
+          await options.agentRuntime.runInteractive(name, task, {
+            model: opts?.model || piModel,
+            logFile: resolve(runDir, `${padded}-${name}-interactive.md`),
+            onLine: emit, onStatus, signal,
+          });
+        } else {
+          const promptFile = resolve(agentsDir, `${name}.md`);
+          if (!existsSync(promptFile)) throw new Error(`Agent prompt not found: ${promptFile}`);
+          await runInteractiveProcess({
+            prompt: promptFile, task, cwd,
+            onLine: emit, onStatus,
+            logFile: resolve(runDir, `${padded}-${name}-interactive.md`),
+            piBinary, piModel: opts?.model || piModel, signal,
+          });
+          if (signal?.aborted) throw new Error("Aborted");
+        }
         emit(`✓ ${name} (interactive)`);
       },
 

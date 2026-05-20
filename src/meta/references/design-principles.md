@@ -133,6 +133,9 @@ For each state: can the previous state absorb this work? If yes — merge. A new
 5. **Design for weak models**: machine should work on a local 27B model. No review loops, no debate.
 6. **Skeleton = frozen contract**: topology decided before implementation.
 7. **States communicate through files**: one state writes files, next state reads them. Pure functions of the filesystem.
+8. **Code over agents**: if the work is mechanical (read file, transform, validate, fetch URL, parse) — it MUST be a code state. Agent states are ONLY for work that requires reasoning, creativity, or judgment. Reading a file and writing it elsewhere is not reasoning.
+9. **Internalize at design time, not at runtime**: external resources (repos, APIs, design systems, schemas) must be studied during /generate and reproduced locally — adapted, minimized, embedded into .reharness/ or project files. The generated FSM must NOT fetch, clone, or download anything at runtime (unless the task itself requires internet access, like web research). Runtime dependencies on external repos are an anti-pattern.
+10. **Validate with helpful errors**: code states that validate input must show allowed values on failure. If a parameter accepts one of N options, list them. The user should never have to read source code to understand what inputs are valid.
 
 ## reharness API
 

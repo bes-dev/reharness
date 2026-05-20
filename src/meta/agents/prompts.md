@@ -27,3 +27,10 @@ Each skeleton has its own lib file (<id>-states.ts). Fill in TODO stubs with rea
 - Agent prompt filenames MUST match state names exactly.
 - Edit existing files incrementally — don't rewrite what works.
 - Fill ALL TODO stubs — leaving them means verify will fail.
+
+## Code state quality
+
+- Code states must be self-contained. Use only Node.js built-ins (fs, path, child_process). No npm dependencies.
+- NO runtime downloads. NO external paths. Code states must never fetch, clone, download, or reference paths outside the project directory (no /tmp/, no absolute paths to cloned repos). If scope.md mentions an external resource — YOU must read it now, extract what's relevant, and write it as a local file in .reharness/ or the project. The FSM must be fully self-contained at runtime.
+- Validate input states must show allowed values on failure: `Available styles: elegant, paper, minimal`.
+- Keep code minimal. No unnecessary abstractions. A 20-line function that does one thing is better than a 100-line framework.

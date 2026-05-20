@@ -69,6 +69,24 @@ export interface PipelineDefinition<C extends Record<string, any> = Record<strin
   piModel?: string;
 }
 
+/** Agent runtime interface — replaces Pi subprocess for FSM agent states. */
+export interface IAgentRuntime {
+  runAgent(name: string, task: string, opts?: {
+    model?: string;
+    logFile?: string;
+    onLine?: (msg: string) => void;
+    onStatus?: (text: string) => void;
+    signal?: AbortSignal;
+  }): Promise<void>;
+  runInteractive(name: string, task: string, opts?: {
+    model?: string;
+    logFile?: string;
+    onLine?: (msg: string) => void;
+    onStatus?: (text: string) => void;
+    signal?: AbortSignal;
+  }): Promise<void>;
+}
+
 /** Options for pipeline.run(). */
 export interface RunOptions {
   resume?: boolean;
@@ -77,6 +95,8 @@ export interface RunOptions {
   onStatus?: (text: string) => void;
   /** Override Pi model at runtime (e.g. from CLI --model flag). Takes precedence over PipelineDefinition.piModel. */
   piModel?: string;
+  /** Agent runtime — if provided, FSM agent states use this instead of Pi subprocess. */
+  agentRuntime?: IAgentRuntime;
 }
 
 /** A pipeline object returned by definePipeline. */

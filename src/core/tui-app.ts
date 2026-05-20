@@ -1,18 +1,12 @@
 /**
- * reharness TUI — built on @mariozechner/pi-tui.
- *
- * Layout:
- *   Header        "reharness v0.3.0"
- *   PipelineView  step list with status icons + elapsed time
- *   LogView       scrollable log of emit messages
- *   Editor        multiline input with slash-command autocomplete
+ * reharness TUI — minimal: full log + statusbar + editor.
+ * Log fills available terminal height, terminal handles scrollback.
  */
 
 import {
   ProcessTerminal,
   TUI,
   Editor,
-  Text,
   CombinedAutocompleteProvider,
   truncateToWidth,
   visibleWidth,
@@ -27,7 +21,7 @@ import type { Project, CommandDefinition, CommandContext } from "./types.js";
 import { formatDuration } from "./ui.js";
 import { loadProject } from "./project.js";
 
-// ── ANSI helpers ────────────────────────────────────────────────
+// ── ANSI ────────────────────────────────────────────────────────
 
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
@@ -36,42 +30,42 @@ const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
 const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
 const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
 
-/** Truncate an ANSI string to width and pad with spaces to fill exactly width columns. */
 function fitLine(line: string, width: number): string {
   const truncated = truncateToWidth(line, width);
   const pad = Math.max(0, width - visibleWidth(truncated));
   return truncated + " ".repeat(pad);
 }
 
-// ── Step status ─────────────────────────────────────────────────
-
-type StepStatus = "pending" | "running" | "done" | "failed";
-
-interface StepState {
-  name: string;
-  status: StepStatus;
-  startedAt?: number;
-  elapsed?: string;
+function styleMsg(msg: string): string {
+  if (msg.startsWith("✓")) return green(msg);
+  if (msg.startsWith("✗")) return red(msg);
+  if (msg.startsWith("⚠")) return yellow(msg);
+  if (msg.startsWith("  ⏳")) return dim(msg);
+  if (msg.startsWith("  ✓")) return green(msg);
+  if (msg.startsWith("  ✗")) return red(msg);
+  return msg;
 }
 
-// ── PipelineView component ──────────────────────────────────────
+// ── Step tracking ──────────────────────────────────────────────
 
+type StepStatus = "pending" | "running" | "done" | "failed";
+interface StepState { name: string; status: StepStatus; startedAt?: number; elapsed?: string; }
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-class PipelineView implements Component {
-  private steps: StepState[] = [];
+class StepTracker {
+  steps: StepState[] = [];
   private spinnerFrame = 0;
   private spinnerTimer?: ReturnType<typeof setInterval>;
   private tui: TUI;
-  private visible = false;
 
-  constructor(tui: TUI) {
-    this.tui = tui;
-  }
+  constructor(tui: TUI) { this.tui = tui; }
+  get current(): StepState | undefined { return this.steps.find(s => s.status === "running"); }
+  get doneCount(): number { return this.steps.filter(s => s.status === "done").length; }
+  get total(): number { return this.steps.length; }
+  get spinner(): string { return SPINNER[this.spinnerFrame]; }
 
   setSteps(names: string[]) {
-    this.steps = names.map((name) => ({ name, status: "pending" as StepStatus }));
-    this.visible = true;
+    this.steps = names.map(name => ({ name, status: "pending" as StepStatus }));
     this.startSpinner();
   }
 
@@ -82,11 +76,8 @@ class PipelineView implements Component {
         if (s.startedAt) s.elapsed = formatDuration(Date.now() - s.startedAt);
       }
     }
-    const step = this.steps.find((s) => s.name === name);
-    if (step) {
-      step.status = "running";
-      step.startedAt = Date.now();
-    }
+    const step = this.steps.find(s => s.name === name);
+    if (step) { step.status = "running"; step.startedAt = Date.now(); }
   }
 
   finish(success: boolean) {
@@ -99,11 +90,7 @@ class PipelineView implements Component {
     }
   }
 
-  clear() {
-    this.steps = [];
-    this.visible = false;
-    this.stopSpinner();
-  }
+  clear() { this.steps = []; this.stopSpinner(); }
 
   private startSpinner() {
     this.stopSpinner();
@@ -114,150 +101,54 @@ class PipelineView implements Component {
   }
 
   private stopSpinner() {
-    if (this.spinnerTimer) {
-      clearInterval(this.spinnerTimer);
-      this.spinnerTimer = undefined;
-    }
-  }
-
-  invalidate() {}
-
-  render(width: number): string[] {
-    if (!this.visible || this.steps.length === 0) return [];
-
-    const maxName = Math.max(...this.steps.map((s) => s.name.length));
-    const lines: string[] = [" ".repeat(width)];
-
-    for (const step of this.steps) {
-      const padded = step.name.padEnd(maxName);
-      const elapsed = step.elapsed || (step.startedAt ? formatDuration(Date.now() - step.startedAt) : "");
-      const timeStr = elapsed ? `  ${dim(elapsed)}` : "";
-
-      let icon: string;
-      let label: string;
-      switch (step.status) {
-        case "done":
-          icon = green("✓");
-          label = padded;
-          break;
-        case "failed":
-          icon = red("✗");
-          label = padded;
-          break;
-        case "running":
-          icon = cyan(SPINNER[this.spinnerFrame]);
-          label = bold(padded);
-          break;
-        default:
-          icon = " ";
-          label = dim(padded);
-          break;
-      }
-
-      lines.push(fitLine(`  ${icon} ${label}${timeStr}`, width));
-    }
-
-    lines.push(" ".repeat(width));
-    return lines;
+    if (this.spinnerTimer) { clearInterval(this.spinnerTimer); this.spinnerTimer = undefined; }
   }
 }
 
-// ── LogView component ───────────────────────────────────────────
+// ── LogView — fills terminal, no line limit ─────────────────────
 
 class LogView implements Component {
   private lines: string[] = [];
-  private maxVisible = 12;
-
-  addLine(raw: string) {
-    this.lines.push(this.styleLine(raw));
-  }
-
-  clear() {
-    this.lines = [];
-  }
-
   invalidate() {}
 
-  private styleLine(msg: string): string {
-    if (msg.startsWith("✓")) return `  ${green(msg)}`;
-    if (msg.startsWith("✗")) return `  ${red(msg)}`;
-    if (msg.startsWith("⚠")) return `  ${yellow(msg)}`;
-    if (msg.startsWith("  ⏳") || msg.startsWith("  ✓")) return `  ${dim(msg)}`;
-    if (msg.startsWith("BUILD COMPLETE") || msg.startsWith("IMPROVE COMPLETE")) return `  ${bold(green(msg))}`;
-    if (msg.startsWith("  cd apps/")) return `  ${dim(msg)}`;
-    return `  ${msg}`;
-  }
+  addLine(raw: string) { this.lines.push(styleMsg(raw)); }
+  clear() { this.lines = []; }
 
   render(width: number): string[] {
     if (this.lines.length === 0) return [];
-    return this.lines.slice(-this.maxVisible).map((l) => fitLine(l, width));
+    // Show all lines — let TUI + terminal handle the overflow
+    return this.lines.map(l => fitLine(`  ${l}`, width));
   }
 }
 
-// ── StatusLine component ────────────────────────────────────────
+// ── StatusBar ──────────────────────────────────────────────────
 
-class StatusLine implements Component {
-  private text = "";
-
-  setText(text: string) {
-    this.text = text;
-  }
-
-  invalidate() {}
-
-  render(width: number): string[] {
-    if (!this.text) return [" ".repeat(width)];
-    return [
-      " ".repeat(width),
-      dim("─".repeat(width)),
-      fitLine(` ${dim(this.text)}`, width),
-      " ".repeat(width),
-    ];
-  }
-}
-
-// ── HintBar component ───────────────────────────────────────────
-
-class HintBar implements Component {
-  private pipelineStatus = "";
+class StatusBar implements Component {
+  private tracker: StepTracker;
+  private info = "";
   private hint = "";
   private defaultHint = "";
 
-  /** Persistent status from pipeline (ctx.status). */
-  setStatus(text: string) {
-    this.pipelineStatus = text;
-  }
-
-  /** Temporary hint (key press feedback, disappears on next action). */
-  setHint(text: string) {
-    this.hint = text;
-  }
-
-  /** Default hint shown when nothing else is active. */
-  setDefault(text: string) {
-    this.defaultHint = text;
-  }
-
-  clearHint() {
-    this.hint = "";
-  }
-
-  clearAll() {
-    this.pipelineStatus = "";
-    this.hint = "";
-  }
-
+  constructor(tracker: StepTracker) { this.tracker = tracker; }
+  setInfo(text: string) { this.info = text; }
+  setHint(text: string) { this.hint = text; }
+  setDefault(text: string) { this.defaultHint = text; }
+  clearHint() { this.hint = ""; }
+  clearAll() { this.info = ""; this.hint = ""; }
   invalidate() {}
 
   render(width: number): string[] {
     const parts: string[] = [];
-    if (this.pipelineStatus) parts.push(this.pipelineStatus);
+    const cur = this.tracker.current;
+    if (cur) {
+      const elapsed = cur.startedAt ? formatDuration(Date.now() - cur.startedAt) : "";
+      parts.push(`${cyan(this.tracker.spinner)} ${bold(cur.name)} ${dim(`(${this.tracker.doneCount}/${this.tracker.total})`)} ${dim(elapsed)}`);
+    }
+    if (this.info) parts.push(dim(this.info));
     if (this.hint) parts.push(this.hint);
-    else if (this.defaultHint && !this.pipelineStatus) parts.push(this.defaultHint);
-
-    if (parts.length === 0) return [];
+    else if (this.defaultHint && parts.length === 0) parts.push(dim(this.defaultHint));
     const text = parts.join(dim("  ·  "));
-    return [fitLine(` ${dim(text)}`, width)];
+    return [dim("─".repeat(width)), fitLine(`  ${text}`, width)];
   }
 }
 
@@ -276,7 +167,7 @@ const editorTheme: EditorTheme = {
   selectList: selectListTheme,
 };
 
-// ── Shared helpers ──────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────
 
 function buildCommandContext(project: Project): CommandContext {
   return { root: project.root, agents: project.agents, cwd: project.root };
@@ -292,11 +183,11 @@ function buildSlashCommands(project: Project): SlashCommand[] {
   return cmds;
 }
 
-function createEmit(pipelineView: PipelineView, logView: LogView, tui: TUI) {
+function createEmit(tracker: StepTracker, logView: LogView, tui: TUI) {
   return (msg: string) => {
     const stepMatch = msg.match(/^── (\S+) ──$/);
     if (stepMatch) {
-      pipelineView.markRunning(stepMatch[1]);
+      tracker.markRunning(stepMatch[1]);
       tui.requestRender();
       return;
     }
@@ -310,7 +201,6 @@ function createEmit(pipelineView: PipelineView, logView: LogView, tui: TUI) {
 // ── Interactive TUI ─────────────────────────────────────────────
 
 export async function startTui(project: Project, piModel?: string, extraCommands?: Record<string, CommandDefinition>) {
-  // Prevent default SIGINT handler — we handle Ctrl+C ourselves
   process.on("SIGINT", () => {});
 
   let currentProject = project;
@@ -327,21 +217,14 @@ export async function startTui(project: Project, piModel?: string, extraCommands
 
   const terminal = new ProcessTerminal();
   const tui = new TUI(terminal, true);
-  let cmdCtx = buildCommandContext(currentProject);
-
-  const header = new Text(`${bold("reharness")} ${dim("v0.3.0")}`, 1, 0);
-  const pipelineView = new PipelineView(tui);
+  const tracker = new StepTracker(tui);
   const logView = new LogView();
-  const statusLine = new StatusLine();
+  const statusBar = new StatusBar(tracker);
   const editor = new Editor(tui, editorTheme);
-  const hintBar = new HintBar();
 
-  tui.addChild(header);
-  tui.addChild(pipelineView);
   tui.addChild(logView);
-  tui.addChild(statusLine);
+  tui.addChild(statusBar);
   tui.addChild(editor);
-  tui.addChild(hintBar);
 
   editor.setAutocompleteProvider(
     new CombinedAutocompleteProvider(buildSlashCommands(currentProject), currentProject.root),
@@ -352,26 +235,16 @@ export async function startTui(project: Project, piModel?: string, extraCommands
   let exitPending = false;
   let exitTimer: ReturnType<typeof setTimeout> | null = null;
 
-  hintBar.setDefault("Ctrl+C to exit · /help for commands · Tab to autocomplete");
+  statusBar.setDefault("reharness v0.3.0 · /help · Ctrl+C exit");
 
   function clearPending() {
     exitPending = false;
     if (exitTimer) { clearTimeout(exitTimer); exitTimer = null; }
-    hintBar.clearHint();
-  }
-
-  function startPendingTimer() {
-    if (exitTimer) clearTimeout(exitTimer);
-    exitTimer = setTimeout(() => {
-      exitPending = false;
-      hintBar.clearHint();
-      tui.requestRender();
-    }, 2000);
+    statusBar.clearHint();
   }
 
   tui.addInputListener((data) => {
     if (isKeyRelease(data)) return undefined;
-
     const isEsc = matchesKey(data, "escape");
     const isCtrlC = matchesKey(data, "ctrl+c");
 
@@ -380,12 +253,11 @@ export async function startTui(project: Project, piModel?: string, extraCommands
       return undefined;
     }
 
-    // Second press — execute
     if (exitPending) {
       clearPending();
       if (running && abortController) {
         abortController.abort();
-        logView.addLine(yellow("⚠ Stopping pipeline..."));
+        logView.addLine(yellow("⚠ Stopping..."));
         tui.requestRender();
       } else {
         tui.stop();
@@ -394,39 +266,26 @@ export async function startTui(project: Project, piModel?: string, extraCommands
       return { consume: true };
     }
 
-    // First press — show hint
     exitPending = true;
-    hintBar.setHint(running ? "Press again to stop pipeline" : "Press again to exit");
+    statusBar.setHint(running ? "Press again to stop" : "Press again to exit");
     tui.requestRender();
-    startPendingTimer();
+    exitTimer = setTimeout(() => { exitPending = false; statusBar.clearHint(); tui.requestRender(); }, 2000);
     return { consume: true };
   });
 
   editor.onSubmit = (text) => {
     const trimmed = text.trim();
-    if (!trimmed) return;
-    if (running) return;
+    if (!trimmed || running) return;
     editor.addToHistory(trimmed);
 
     let input = trimmed;
     if (input.startsWith("/")) input = input.slice(1);
 
-    if (input === "help") {
-      showHelp(logView, currentProject);
-      tui.requestRender();
-      return;
-    }
-    if (input === "quit" || input === "exit") {
-      tui.stop();
-      process.exit(0);
-    }
+    if (input === "help") { showHelp(logView, currentProject); tui.requestRender(); return; }
+    if (input === "quit" || input === "exit") { tui.stop(); process.exit(0); }
 
     const parts = input.split(/\s+/);
-    const command = parts[0];
-    const args = parts.slice(1);
-    if (!command) return;
-
-    handleCommand(command, args).catch((err) => {
+    handleCommand(parts[0], parts.slice(1)).catch(err => {
       logView.addLine(`${red("✗")} ${err.message}`);
       tui.requestRender();
     });
@@ -435,58 +294,46 @@ export async function startTui(project: Project, piModel?: string, extraCommands
   async function handleCommand(name: string, args: string[]) {
     const def = currentProject.commands[name];
     if (!def) {
-      logView.addLine(`${dim("Unknown command:")} ${name}`);
+      logView.addLine(`${dim("Unknown:")} ${name}`);
       tui.requestRender();
       return;
     }
 
     const isResume = args.includes("--resume");
     const cleanArgs = args.filter(a => a !== "--resume");
-
-    cmdCtx = buildCommandContext(currentProject);
+    const cmdCtx = buildCommandContext(currentProject);
     const pipeline = def.run(cleanArgs, cmdCtx);
-    if (!pipeline?.run) {
-      logView.addLine(`${red("✗")} Command "${name}" did not return a pipeline`);
-      tui.requestRender();
-      return;
-    }
+    if (!pipeline?.run) { logView.addLine(`${red("✗")} "${name}" returned no pipeline`); tui.requestRender(); return; }
 
     running = true;
     abortController = new AbortController();
     editor.disableSubmit = true;
-    pipelineView.setSteps(Object.keys(pipeline.states));
+    tracker.setSteps(Object.keys(pipeline.states));
     logView.clear();
-    hintBar.setDefault("Esc/Ctrl+C to stop pipeline");
-    statusLine.setText(`Running: /${name} ${cleanArgs.join(" ")}${isResume ? " (resume)" : ""}`);
+    statusBar.setDefault("Ctrl+C stop");
     tui.requestRender();
 
     const start = Date.now();
-    const emit = createEmit(pipelineView, logView, tui);
-    const onStatus = (text: string) => {
-      hintBar.setStatus(text);
-      tui.requestRender();
-    };
+    const emit = createEmit(tracker, logView, tui);
+    const onStatus = (text: string) => { statusBar.setInfo(text); tui.requestRender(); };
 
     try {
       const status = await pipeline.run(emit, { resume: isResume, signal: abortController.signal, onStatus, piModel });
-      pipelineView.finish(status === "success");
+      tracker.finish(status === "success");
       const elapsed = formatDuration(Date.now() - start);
-      const result = status === "success" ? green(`✓ ${status}`) : red(`✗ ${status}`);
-      statusLine.setText(`/${name} — ${result} ${dim(`(${elapsed})`)}`);
+      logView.addLine(status === "success" ? green(`✓ done (${elapsed})`) : red(`✗ ${status} (${elapsed})`));
     } catch (err: any) {
-      pipelineView.finish(false);
-      statusLine.setText(`/${name} — ${red("crashed")}: ${err.message}`);
+      tracker.finish(false);
+      logView.addLine(`${red("✗ crashed:")} ${err.message}`);
     }
 
     running = false;
     abortController = null;
     editor.disableSubmit = false;
-    hintBar.clearAll();
-    hintBar.setDefault("Ctrl+C to exit · /help for commands · Tab to autocomplete");
-
-    // Reload project to pick up newly generated commands
+    tracker.clear();
+    statusBar.clearAll();
+    statusBar.setDefault("reharness v0.3.0 · /help · Ctrl+C exit");
     await reloadProject();
-
     tui.requestRender();
   }
 
@@ -497,10 +344,6 @@ export async function startTui(project: Project, piModel?: string, extraCommands
 // ── Direct (non-interactive) run ────────────────────────────────
 
 export async function runDirect(project: Project, name: string, args: string[], piModel?: string) {
-  process.on("SIGINT", () => {});
-  const isResume = args.includes("--resume");
-  const cleanArgs = args.filter(a => a !== "--resume");
-
   const def = project.commands[name];
   if (!def) {
     console.error(`Unknown command: ${name}`);
@@ -508,66 +351,43 @@ export async function runDirect(project: Project, name: string, args: string[], 
     process.exit(1);
   }
 
+  const cleanArgs = args.filter(a => a !== "--resume");
+  const isResume = args.includes("--resume");
   const cmdCtx = buildCommandContext(project);
   const pipeline = def.run(cleanArgs, cmdCtx);
-  if (!pipeline?.run) {
-    console.error(`Command "${name}" did not return a pipeline`);
-    process.exit(1);
-  }
+  if (!pipeline?.run) { console.error(`"${name}" returned no pipeline`); process.exit(1); }
 
-  const terminal = new ProcessTerminal();
-  const tui = new TUI(terminal, true);
-  const pipelineView = new PipelineView(tui);
-  const logView = new LogView();
-  const statusLine = new StatusLine();
+  const tracker = { current: "", done: 0, total: Object.keys(pipeline.states).length };
 
-  tui.addChild(new Text(`${bold("reharness")} ${dim(`/${name}`)} ${dim(cleanArgs.join(" "))}`, 1, 0));
-  tui.addChild(pipelineView);
-  tui.addChild(logView);
-  tui.addChild(statusLine);
-
-  const ac = new AbortController();
-  const hintBar = new HintBar();
-  tui.addChild(hintBar);
-
-  tui.addInputListener((data) => {
-    if (isKeyRelease(data)) return undefined;
-    if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
-      if (!ac.signal.aborted) {
-        ac.abort();
-        hintBar.setHint("Aborting... press again to force exit");
-        tui.requestRender();
-        return { consume: true };
-      }
-      tui.stop();
-      process.exit(130);
+  const emit = (msg: string) => {
+    const stepMatch = msg.match(/^── (\S+) ──$/);
+    if (stepMatch) {
+      tracker.current = stepMatch[1];
+      tracker.done++;
+      process.stdout.write(`\r${cyan("⠋")} ${bold(tracker.current)} ${dim(`(${tracker.done}/${tracker.total})`)}\x1b[K`);
+      return;
     }
-    return undefined;
-  });
-
-  pipelineView.setSteps(Object.keys(pipeline.states));
-  hintBar.setDefault("Esc/Ctrl+C to stop");
-  statusLine.setText(`Running: /${name}${isResume ? " (resume)" : ""}`);
-  tui.start();
+    if (msg.trim()) {
+      process.stdout.write("\r\x1b[K");
+      console.log(styleMsg(msg));
+    }
+  };
 
   const start = Date.now();
-  const emit = createEmit(pipelineView, logView, tui);
-  const onStatus = (text: string) => { hintBar.setStatus(text); tui.requestRender(); };
+  const onStatus = (text: string) => {
+    process.stdout.write(`\r${cyan("⠋")} ${bold(tracker.current)} ${dim(text)}\x1b[K`);
+  };
+
+  process.on("SIGINT", () => { process.stdout.write("\r\x1b[K"); process.exit(130); });
 
   try {
-    const status = await pipeline.run(emit, { resume: isResume, signal: ac.signal, onStatus, piModel });
-    pipelineView.finish(status === "success");
-    statusLine.setText(`/${name} — ${status === "success" ? green("done") : red(status)} (${formatDuration(Date.now() - start)})`);
-    tui.requestRender();
-    await new Promise((r) => setTimeout(r, 500));
-    tui.stop();
+    const status = await pipeline.run(emit, { resume: isResume, onStatus, piModel });
+    process.stdout.write("\r\x1b[K");
+    console.log(status === "success" ? green(`✓ done (${formatDuration(Date.now() - start)})`) : red(`✗ ${status}`));
     process.exit(status === "success" ? 0 : 1);
   } catch (err: any) {
-    pipelineView.finish(false);
-    statusLine.setText(`/${name} — ${red("crashed")}: ${err.message}`);
-    tui.requestRender();
-    await new Promise((r) => setTimeout(r, 500));
-    tui.stop();
+    process.stdout.write("\r\x1b[K");
+    console.log(`${red("✗ crashed:")} ${err.message}`);
     process.exit(1);
   }
 }
@@ -578,9 +398,9 @@ function showHelp(logView: LogView, project: Project) {
   logView.addLine("");
   for (const [name, def] of Object.entries(project.commands)) {
     const usage = def.usage ? ` ${dim(def.usage)}` : "";
-    logView.addLine(`${cyan("/" + name.padEnd(12))}${usage}  ${dim(def.description)}`);
+    logView.addLine(`${cyan("/" + name.padEnd(14))}${usage}  ${dim(def.description)}`);
   }
-  logView.addLine(`${cyan("/help".padEnd(13))} ${dim("Show this help")}`);
-  logView.addLine(`${cyan("/quit".padEnd(13))} ${dim("Exit")}`);
+  logView.addLine(`${cyan("/help".padEnd(15))} ${dim("Show this help")}`);
+  logView.addLine(`${cyan("/quit".padEnd(15))} ${dim("Exit")}`);
   logView.addLine("");
 }

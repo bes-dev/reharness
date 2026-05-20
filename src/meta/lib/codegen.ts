@@ -1,21 +1,26 @@
-import { writeFileSync, readFileSync, appendFileSync, mkdirSync, existsSync, readdirSync } from "fs";
+import { writeFileSync, readFileSync, appendFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from "fs";
 import { resolve, dirname } from "path";
 import type { SkeletonJSON, SkeletonState, GuardedTransition } from "./skeleton-schema.js";
 
 /**
  * Generate commands from ALL skeletons in skeletons/ directory.
  * Each skeleton.json → one command .ts file.
+ * Then reconcile: remove orphaned agents and dead lib functions.
  */
 export function generateAllFromSkeletons(reharnessDir: string): void {
   const skeletonsDir = resolve(reharnessDir, "skeletons");
   if (!existsSync(skeletonsDir)) return;
 
+  const skeletons: SkeletonJSON[] = [];
   for (const file of readdirSync(skeletonsDir).filter(f => f.endsWith(".json"))) {
     try {
       const skeleton: SkeletonJSON = JSON.parse(readFileSync(resolve(skeletonsDir, file), "utf-8"));
       generateFromSkeleton(skeleton, reharnessDir);
+      skeletons.push(skeleton);
     } catch { /* invalid JSON — skip */ }
   }
+
+  reconcile(reharnessDir, skeletons);
 }
 
 /**
@@ -243,4 +248,110 @@ function generateLibFile(skeleton: SkeletonJSON, codeStates: string[]): string {
   }
 
   return lines.join("\n");
+}
+
+/**
+ * Reconcile filesystem against skeletons: remove orphaned agents and dead lib functions.
+ */
+function reconcile(reharnessDir: string, skeletons: SkeletonJSON[]): void {
+  const agentsDir = resolve(reharnessDir, "agents");
+  const libDir = resolve(reharnessDir, "lib");
+
+  // Collect all agent state names and per-skeleton code state names
+  const allAgentStates = new Set<string>();
+  const codeStatesBySkeletonId = new Map<string, Set<string>>();
+
+  for (const sk of skeletons) {
+    const codeStates = new Set<string>();
+    for (const [name, state] of Object.entries(sk.states)) {
+      if (state.type === "agent") allAgentStates.add(name);
+      if (state.type === "code") codeStates.add(name);
+    }
+    codeStatesBySkeletonId.set(sk.id, codeStates);
+  }
+
+  // Remove orphaned agent .md files
+  if (existsSync(agentsDir)) {
+    for (const file of readdirSync(agentsDir).filter(f => f.endsWith(".md"))) {
+      const name = file.replace(".md", "");
+      if (!allAgentStates.has(name)) {
+        unlinkSync(resolve(agentsDir, file));
+      }
+    }
+  }
+
+  // Remove dead functions from lib files
+  if (existsSync(libDir)) {
+    for (const [skeletonId, codeStates] of codeStatesBySkeletonId) {
+      const libPath = resolve(libDir, `${skeletonId}-states.ts`);
+      if (!existsSync(libPath)) continue;
+      const cleaned = removeDeadFunctions(readFileSync(libPath, "utf-8"), codeStates);
+      if (cleaned !== null) writeFileSync(libPath, cleaned);
+    }
+  }
+}
+
+/**
+ * Parse a lib file and remove exported functions that are:
+ * 1. Not a code state entry (name not in liveStates)
+ * 2. Not called by any other function in the file
+ * Returns cleaned content, or null if nothing changed.
+ */
+function removeDeadFunctions(source: string, liveStates: Set<string>): string | null {
+  const funcPattern = /^export function (\w+Entry)\b/;
+  const lines = source.split("\n");
+
+  const preambleLines: string[] = [];
+  const functions: Array<{ name: string; stateName: string; lines: string[] }> = [];
+  let current: { name: string; stateName: string; lines: string[] } | null = null;
+
+  for (const line of lines) {
+    const match = line.match(funcPattern);
+    if (match) {
+      if (current) functions.push(current);
+      const funcName = match[1];
+      const stateName = funcName.replace(/Entry$/, "");
+      current = { name: funcName, stateName, lines: [line] };
+    } else if (current) {
+      current.lines.push(line);
+    } else {
+      preambleLines.push(line);
+    }
+  }
+  if (current) functions.push(current);
+
+  // A function is live if it's a code state entry OR called by another function
+  const liveNames = new Set(functions.filter(f => liveStates.has(f.stateName)).map(f => f.name));
+
+  // Iteratively mark functions as live if referenced by other live functions
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const f of functions) {
+      if (liveNames.has(f.name)) continue;
+      const body = f.lines.join("\n");
+      for (const liveName of liveNames) {
+        if (body.includes(liveName)) { // referenced by a live function? nope, check the other way
+          break;
+        }
+      }
+      // Check if any live function references this one
+      for (const live of functions) {
+        if (!liveNames.has(live.name)) continue;
+        if (live.lines.join("\n").includes(f.name)) {
+          liveNames.add(f.name);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+
+  const liveFunctions = functions.filter(f => liveNames.has(f.name));
+  if (liveFunctions.length === functions.length) return null;
+
+  return [
+    ...preambleLines,
+    ...liveFunctions.flatMap(f => f.lines),
+  ].join("\n");
 }
