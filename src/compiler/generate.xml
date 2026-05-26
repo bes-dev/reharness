@@ -30,7 +30,15 @@
   </state>
 
   <state name="fill_prompts" type="agent">
-    <on event="DONE" target="verify" />
+    <on event="DONE" target="review" />
+  </state>
+
+  <state name="review" type="agent">
+    <on event="PASS" target="verify" />
+    <on event="FAIL">
+      <go target="fill_prompts" retries-key="review" retries-max="2" />
+      <go target="error" />
+    </on>
   </state>
 
   <state name="verify" type="code">
