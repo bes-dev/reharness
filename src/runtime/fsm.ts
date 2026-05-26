@@ -167,63 +167,210 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
     const snapshot = (cur: string): SavedState => ({ runId, current: cur, data, retries });
     const fail = (msg: string): "error" => { emit(msg); save(runDir, snapshot(current)); return "error"; };
 
-    const ctx: StateContext<C> = {
-      config: def.config,
-      emit, status: onStatus, data, runId, runDir,
-      retry: (k) => (retries[k] = (retries[k] || 0) + 1),
-      retries: (k) => retries[k] || 0,
-      agent: async (name, task, o) => {
-        if (signal?.aborted) throw new Error("Aborted");
-        const logFile = resolve(runDir, `${String(++stepCounter).padStart(2, "0")}-${name}.md`);
-        const promptFile = resolve(agentsDir, `${name}.md`);
-        if (!existsSync(promptFile)) throw new Error(`Agent prompt not found: ${promptFile}`);
-        await runAgent({
-          prompt: promptFile, task, cwd,
-          onLine: emit, onStatus,
-          logFile, piBinary, piModel: o?.model || piModel, signal,
-        });
-        emit(`✓ ${name}`);
-      },
-      interactive: async (name, task, o) => {
-        if (signal?.aborted) throw new Error("Aborted");
-        const promptFile = resolve(agentsDir, `${name}.md`);
-        if (!existsSync(promptFile)) throw new Error(`Agent prompt not found: ${promptFile}`);
+    // ── ctx services (read c.runDir per-call so branches/iterations get isolated logs) ──
+    async function callAgent(c: StateContext<C>, name: string, task: string, o?: any): Promise<void> {
+      if (signal?.aborted) throw new Error("Aborted");
+      const logFile = resolve(c.runDir, `${String(++stepCounter).padStart(2, "0")}-${name}.md`);
+      const promptFile = resolve(agentsDir, `${name}.md`);
+      if (!existsSync(promptFile)) throw new Error(`Agent prompt not found: ${promptFile}`);
+      await runAgent({
+        prompt: promptFile, task, cwd, onLine: emit, onStatus,
+        logFile, piBinary, piModel: o?.model || piModel, signal,
+      });
+      emit(`✓ ${name}`);
+    }
 
-        const artifacts = o?.artifacts || [];
-        const absArtifacts = artifacts.map(a => isAbsolute(a) ? a : resolve(cwd, a));
-        for (let i = 0; i < absArtifacts.length; i++) {
-          if (!existsSync(absArtifacts[i])) throw new Error(`Interactive artifact missing: ${artifacts[i]}`);
+    async function callInteractive(c: StateContext<C>, name: string, task: string, o?: any): Promise<void> {
+      if (signal?.aborted) throw new Error("Aborted");
+      const promptFile = resolve(agentsDir, `${name}.md`);
+      if (!existsSync(promptFile)) throw new Error(`Agent prompt not found: ${promptFile}`);
+
+      const artifacts = o?.artifacts || [];
+      const absArtifacts = artifacts.map((a: string) => isAbsolute(a) ? a : resolve(cwd, a));
+      for (let i = 0; i < absArtifacts.length; i++) {
+        if (!existsSync(absArtifacts[i])) throw new Error(`Interactive artifact missing: ${artifacts[i]}`);
+      }
+
+      emit(`▷ ${name} (interactive — exit Pi to continue)`);
+      await runInteractive({
+        prompt: promptFile, task, cwd, piBinary, piModel: o?.model || piModel, signal,
+      });
+
+      for (let i = 0; i < absArtifacts.length; i++) {
+        if (!existsSync(absArtifacts[i])) throw new Error(`Interactive contract violated: ${artifacts[i]} was deleted`);
+        if (absArtifacts[i].endsWith(".xml")) {
+          try { readFileSync(absArtifacts[i], "utf-8"); } catch (e: any) { throw new Error(`${artifacts[i]} unreadable: ${e.message}`); }
         }
+      }
+      emit(`✓ ${name}`);
+    }
 
-        emit(`▷ ${name} (interactive — exit Pi to continue)`);
-        await runInteractive({
-          prompt: promptFile, task, cwd,
-          piBinary, piModel: o?.model || piModel, signal,
-        });
+    function doShell(_c: StateContext<C>, cmd: string, label?: string): boolean {
+      if (signal?.aborted) return false;
+      const lbl = label || cmd.slice(0, 30);
+      try {
+        execSync(cmd, { cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 120_000 });
+        emit(`✓ ${lbl}`); return true;
+      } catch (err: any) {
+        emit(`✗ ${lbl}`);
+        const detail = (err.stderr?.toString().trim() || err.stdout?.toString().trim());
+        if (detail) detail.split("\n").slice(-5).forEach((l: string) => emit(`  ${l}`));
+        return false;
+      }
+    }
 
-        for (let i = 0; i < absArtifacts.length; i++) {
-          if (!existsSync(absArtifacts[i])) throw new Error(`Interactive contract violated: ${artifacts[i]} was deleted`);
-          if (absArtifacts[i].endsWith(".xml")) {
-            try { readFileSync(absArtifacts[i], "utf-8"); } catch (e: any) { throw new Error(`${artifacts[i]} unreadable: ${e.message}`); }
-          }
+    function mkCtx(overrides: Partial<StateContext<C>> = {}): StateContext<C> {
+      const c: StateContext<C> = {
+        config: def.config,
+        emit, status: onStatus, data, runId, runDir,
+        retry: (k) => (retries[k] = (retries[k] || 0) + 1),
+        retries: (k) => retries[k] || 0,
+        agent: async (n, t, o) => callAgent(c, n, t, o),
+        interactive: async (n, t, o) => callInteractive(c, n, t, o),
+        shell: (cmd, label) => doShell(c, cmd, label),
+        ...overrides,
+      } as StateContext<C>;
+      return c;
+    }
+
+    const ctx = mkCtx();
+
+    // ── Nested-aware helpers (called from outer FSM loop and from executeStateOnce) ──
+
+    async function runParallel(state: ParallelState<C>, name: string, base: StateContext<C>): Promise<BranchResult[]> {
+      let items: any[];
+      try { items = state.over(base); }
+      catch (err: any) { throw new Error(`parallel "${name}" over: ${err.message}`); }
+      if (!Array.isArray(items)) throw new Error(`parallel "${name}" over: expected array, got ${typeof items}`);
+
+      const parallelDir = resolve(base.runDir, "parallel", name);
+      mkdirSync(parallelDir, { recursive: true });
+
+      const cap = Math.max(1, state.concurrency || items.length || 1);
+      const results: BranchResult[] = new Array(items.length);
+      let cursor = 0;
+      emit(`▷ parallel ${name}: ${items.length} branch(es), concurrency=${Math.min(cap, items.length || 1)}`);
+
+      async function runBranch(index: number): Promise<void> {
+        if (signal?.aborted) {
+          results[index] = { index, input: items[index], dir: "", ok: false, error: "Aborted" };
+          return;
         }
-        emit(`✓ ${name}`);
-      },
-      shell: (cmd, label) => {
-        if (signal?.aborted) return false;
-        const lbl = label || cmd.slice(0, 30);
+        const branchDir = resolve(parallelDir, String(index));
+        mkdirSync(branchDir, { recursive: true });
+        const branchCtx = mkCtx({
+          runDir: branchDir,
+          branchInput: items[index],
+          branchIndex: index,
+          branchDir,
+        });
         try {
-          execSync(cmd, { cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 120_000 });
-          emit(`✓ ${lbl}`); return true;
+          await executeStateOnce(state.branch, branchCtx);
+          results[index] = { index, input: items[index], dir: branchDir, ok: true };
         } catch (err: any) {
-          emit(`✗ ${lbl}`);
-          const detail = (err.stderr?.toString().trim() || err.stdout?.toString().trim());
-          if (detail) detail.split("\n").slice(-5).forEach((l: string) => emit(`  ${l}`));
-          return false;
+          results[index] = { index, input: items[index], dir: branchDir, ok: false, error: err.message };
+          emit(`✗ branch ${index} (${state.branch}): ${err.message}`);
         }
-      },
-    };
+      }
 
+      async function worker(): Promise<void> {
+        while (cursor < items.length) await runBranch(cursor++);
+      }
+
+      await Promise.all(Array.from({ length: Math.min(cap, items.length) }, () => worker()));
+      return results;
+    }
+
+    async function runLoop(state: LoopState<C>, name: string, base: StateContext<C>): Promise<number> {
+      const steps = state.steps;
+      const max = state.max;
+      const exitFn = state.exit;
+      const loopDir = resolve(base.runDir, "loop", name);
+      mkdirSync(loopDir, { recursive: true });
+
+      emit(`▷ loop ${name}: max=${max ?? "∞"}, steps=${steps.length}`);
+      let iter = 0;
+      while (true) {
+        if (signal?.aborted) throw new Error("Aborted");
+        data.iteration = iter;
+        const iterDir = resolve(loopDir, String(iter));
+        mkdirSync(iterDir, { recursive: true });
+        const stepCtx = mkCtx({
+          runDir: iterDir,
+          branchInput: base.branchInput,
+          branchIndex: base.branchIndex,
+          branchDir: base.branchDir,
+        });
+
+        for (const stepName of steps) await executeStateOnce(stepName, stepCtx);
+
+        iter++;
+        data.iteration = iter; // re-establish in case nested loop overwrote it
+        if ((exitFn && exitFn(base)) || (max !== undefined && iter >= max)) {
+          emit(`✓ loop ${name}: ${iter} iteration(s)`);
+          return iter;
+        }
+      }
+    }
+
+    /** Run an approval state in isolation. Returns the resolved event. */
+    async function runApproval(state: ApprovalState<C>, name: string, base: StateContext<C>): Promise<string> {
+      const round = (approvalRounds[name] = (approvalRounds[name] || 0) + 1);
+      const events = Object.keys(state.on);
+      const autoEvent = state.autoEvent || events[0];
+
+      const artifacts: ApprovalCheckpoint["artifacts"] = [];
+      for (const rel of state.artifacts || []) {
+        const full = isAbsolute(rel) ? rel : resolve(cwd, rel);
+        if (existsSync(full)) {
+          try { artifacts.push({ path: rel, content: readFileSync(full, "utf-8") }); }
+          catch { /* unreadable */ }
+        }
+      }
+
+      const checkpoint: ApprovalCheckpoint = {
+        state: name, prompt: state.prompt, events, autoEvent, artifacts, round,
+        priorFeedback: approvalFeedback[name] || [],
+      };
+
+      let resolution;
+      if (opts.autoApprove) {
+        emit(`⚠ auto-approve: ${name} → ${autoEvent}`);
+        resolution = { event: autoEvent };
+      } else if (opts.approvalHandler) {
+        resolution = await opts.approvalHandler(checkpoint);
+      } else {
+        throw new Error(`approval "${name}" reached without --auto-approve or approvalHandler`);
+      }
+
+      if (!events.includes(resolution.event)) {
+        throw new Error(`approval "${name}": invalid event "${resolution.event}" (allowed: ${events.join(", ")})`);
+      }
+
+      if (resolution.feedback?.trim()) {
+        const dir = resolve(cwd, ".reharness", "feedback");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(resolve(dir, `${name}-round-${round}.md`), resolution.feedback);
+        (approvalFeedback[name] ||= []).push(resolution.feedback);
+        data.__allFeedback = approvalFeedback[name];
+      }
+      return resolution.event;
+    }
+
+    /** Execute a single state without following its on-transitions. Used by parallel.branch and loop.step. */
+    async function executeStateOnce(name: string, isoCtx: StateContext<C>): Promise<void> {
+      const state = def.states[name];
+      if (!state) throw new Error(`Unknown state: ${name}`);
+      if (isFinal(state)) throw new Error(`Cannot run final state '${name}' as a branch/step`);
+      if (isSwitch(state)) throw new Error(`Cannot run switch state '${name}' as a branch/step (routing only)`);
+      if (isApproval(state)) { await runApproval(state, name, isoCtx); return; }
+      if (isParallel(state)) { isoCtx.data.branches = await runParallel(state, name, isoCtx); return; }
+      if (isLoop(state)) { isoCtx.data.iterations = await runLoop(state, name, isoCtx); return; }
+      // ActiveState (agent / code / set / interactive)
+      await (state as ActiveState<C>).entry(isoCtx);
+    }
+
+    // ── Outer FSM loop ──
     while (true) {
       if (signal?.aborted) return fail("⚠ Aborted by user");
 
@@ -233,7 +380,6 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
       save(runDir, snapshot(current));
       emit(`── ${current} ──`);
 
-      // Final
       if (isFinal(state)) {
         if (state.entry) {
           try { await state.entry(ctx as StateContext<any>); }
@@ -243,56 +389,16 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
         return state.status;
       }
 
-      // Approval
       if (isApproval(state)) {
-        const round = (approvalRounds[current] = (approvalRounds[current] || 0) + 1);
-        const events = Object.keys(state.on);
-        const autoEvent = state.autoEvent || events[0];
-
-        const artifacts: ApprovalCheckpoint["artifacts"] = [];
-        for (const rel of state.artifacts || []) {
-          const full = isAbsolute(rel) ? rel : resolve(cwd, rel);
-          if (existsSync(full)) {
-            try { artifacts.push({ path: rel, content: readFileSync(full, "utf-8") }); }
-            catch { /* unreadable */ }
-          }
-        }
-
-        const checkpoint: ApprovalCheckpoint = {
-          state: current, prompt: state.prompt, events, autoEvent, artifacts, round,
-          priorFeedback: approvalFeedback[current] || [],
-        };
-
-        let resolution;
-        if (opts.autoApprove) {
-          emit(`⚠ auto-approve: ${current} → ${autoEvent}`);
-          resolution = { event: autoEvent };
-        } else if (opts.approvalHandler) {
-          try { resolution = await opts.approvalHandler(checkpoint); }
-          catch (err: any) { return fail(`✗ approval handler failed: ${err.message}`); }
-        } else {
-          return fail(`✗ approval "${current}" reached without --auto-approve or approvalHandler`);
-        }
-
-        if (!events.includes(resolution.event)) {
-          return fail(`✗ approval "${current}": invalid event "${resolution.event}" (allowed: ${events.join(", ")})`);
-        }
-
-        if (resolution.feedback?.trim()) {
-          const dir = resolve(cwd, ".reharness", "feedback");
-          mkdirSync(dir, { recursive: true });
-          writeFileSync(resolve(dir, `${current}-round-${round}.md`), resolution.feedback);
-          (approvalFeedback[current] ||= []).push(resolution.feedback);
-          data.__allFeedback = approvalFeedback[current];
-        }
-
-        const next = resolveTarget(state.on[resolution.event], ctx);
-        if (!next) return fail(`✗ approval "${current}" → "${resolution.event}": no resolvable target`);
+        let event: string;
+        try { event = await runApproval(state, current, ctx); }
+        catch (err: any) { return fail(`✗ ${err.message}`); }
+        const next = resolveTarget(state.on[event], ctx);
+        if (!next) return fail(`✗ approval "${current}" → "${event}": no resolvable target`);
         current = next;
         continue;
       }
 
-      // Switch
       if (isSwitch(state)) {
         const next = resolveTarget(state.branches, ctx);
         if (!next) return fail(`✗ switch "${current}": no branch matched`);
@@ -300,109 +406,29 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
         continue;
       }
 
-      // Parallel — fan out, capture per-branch results, transition to join.
       if (isParallel(state)) {
-        const branchName = state.branch;
-        const joinName = state.join;
-        const capRaw = state.concurrency;
-        let items: any[];
-        try { items = state.over(ctx); }
-        catch (err: any) { return fail(`✗ parallel "${current}" over: ${err.message}`); }
-        if (!Array.isArray(items)) return fail(`✗ parallel "${current}" over: expected array, got ${typeof items}`);
-
-        const branchState = def.states[branchName] as ActiveState<C> | undefined;
-        if (!branchState || !("entry" in branchState)) {
-          return fail(`✗ parallel "${current}" branch "${branchName}" must be an active state`);
+        try {
+          const results = await runParallel(state, current, ctx);
+          data.branches = results;
+          const okCount = results.filter(r => r.ok).length;
+          emit(`✓ parallel ${current}: ${okCount}/${results.length} ok`);
+          if (signal?.aborted) return fail("⚠ Aborted by user");
+          current = state.join;
+        } catch (err: any) {
+          if (signal?.aborted) return fail("⚠ Aborted by user");
+          return fail(`✗ parallel ${current}: ${err.message}`);
         }
-
-        const parallelDir = resolve(cwd, ".reharness", "parallel", current);
-        mkdirSync(parallelDir, { recursive: true });
-
-        const cap = Math.max(1, capRaw || items.length || 1);
-        const results: BranchResult[] = new Array(items.length);
-        let cursor = 0;
-        emit(`▷ parallel ${current}: ${items.length} branch(es), concurrency=${Math.min(cap, items.length)}`);
-
-        async function runBranch(index: number): Promise<void> {
-          if (signal?.aborted) {
-            results[index] = { index, input: items[index], dir: "", ok: false, error: "Aborted" };
-            return;
-          }
-          const branchDir = resolve(parallelDir, String(index));
-          mkdirSync(branchDir, { recursive: true });
-          const branchCtx: StateContext<C> = {
-            ...ctx,
-            runDir: branchDir,
-            branchInput: items[index],
-            branchIndex: index,
-            branchDir,
-          };
-          try {
-            await (branchState as ActiveState<C>).entry(branchCtx);
-            results[index] = { index, input: items[index], dir: branchDir, ok: true };
-          } catch (err: any) {
-            results[index] = { index, input: items[index], dir: branchDir, ok: false, error: err.message };
-            emit(`✗ branch ${index} (${branchName}): ${err.message}`);
-          }
-        }
-
-        async function worker(): Promise<void> {
-          while (true) {
-            const i = cursor++;
-            if (i >= items.length) return;
-            await runBranch(i);
-          }
-        }
-
-        await Promise.all(Array.from({ length: Math.min(cap, items.length) }, () => worker()));
-
-        if (signal?.aborted) return fail("⚠ Aborted by user");
-
-        data.branches = results;
-        const okCount = results.filter(r => r.ok).length;
-        emit(`✓ parallel ${current}: ${okCount}/${items.length} ok`);
-        current = joinName;
         continue;
       }
 
-      // Loop — run steps in sequence per iteration; exit when exit() truthy or iter >= max.
       if (isLoop(state)) {
-        const steps = state.steps;
-        const joinName = state.join;
-        const max = state.max;
-        const exitFn = state.exit;
-        const loopDir = resolve(cwd, ".reharness", "loop", current);
-        mkdirSync(loopDir, { recursive: true });
-
-        emit(`▷ loop ${current}: max=${max ?? "∞"}, steps=${steps.length}`);
-        let iter = 0;
-        while (true) {
+        try {
+          data.iterations = await runLoop(state, current, ctx);
           if (signal?.aborted) return fail("⚠ Aborted by user");
-          data.iteration = iter;
-          const iterDir = resolve(loopDir, String(iter));
-          mkdirSync(iterDir, { recursive: true });
-
-          for (const stepName of steps) {
-            const stepState = def.states[stepName] as ActiveState<C> | undefined;
-            if (!stepState || !("entry" in stepState)) {
-              return fail(`✗ loop "${current}" step "${stepName}" must be an active state`);
-            }
-            const stepCtx: StateContext<C> = { ...ctx, runDir: iterDir };
-            try {
-              await stepState.entry(stepCtx);
-            } catch (err: any) {
-              return fail(`✗ loop "${current}" iter ${iter} step "${stepName}" failed: ${err.message}`);
-            }
-          }
-
-          iter++;
-          const shouldExit = (exitFn && exitFn(ctx)) || (max !== undefined && iter >= max);
-          if (shouldExit) {
-            emit(`✓ loop ${current}: ${iter} iteration(s)`);
-            data.iterations = iter;
-            current = joinName;
-            break;
-          }
+          current = state.join;
+        } catch (err: any) {
+          if (signal?.aborted) return fail("⚠ Aborted by user");
+          return fail(`✗ loop ${current}: ${err.message}`);
         }
         continue;
       }

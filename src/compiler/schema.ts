@@ -1,5 +1,12 @@
 import { compileGuardExpr } from "./expr.js";
 
+/** State types allowed as a `parallel` branch. Excludes routing-only (switch/check), terminal (final),
+ * interactive (terminal contention), and approval (parallel terminal contention). */
+const BRANCH_ALLOWED = new Set<SkeletonState["type"]>(["agent", "code", "set", "parallel", "loop"]);
+
+/** State types allowed as a `loop` step. Same as branches, plus approval (loop is sequential — no contention). */
+const STEP_ALLOWED = new Set<SkeletonState["type"]>(["agent", "code", "set", "approval", "parallel", "loop"]);
+
 export interface GuardedTransition {
   target: string;
   /** Either `retries:KEY<N` (retry counter) OR a `expr:<safe-subset-JS>` expression. Empty → unconditional. */
@@ -101,8 +108,8 @@ export function validateSkeleton(sk: Skeleton): string[] {
           if (!names.has(s)) errors.push(`Loop state '${name}' step '${s}' does not exist`);
           else {
             const st = sk.states[s].type;
-            if (st !== "agent" && st !== "code") {
-              errors.push(`Loop state '${name}' step '${s}' must be type agent or code, got ${st}`);
+            if (!STEP_ALLOWED.has(st)) {
+              errors.push(`Loop state '${name}' step '${s}' must be one of [${[...STEP_ALLOWED].join(", ")}], got ${st}`);
             }
           }
         }
@@ -132,8 +139,8 @@ export function validateSkeleton(sk: Skeleton): string[] {
       else if (!names.has(state.parallelBranch)) errors.push(`Parallel state '${name}' branch '${state.parallelBranch}' does not exist`);
       else {
         const bt = sk.states[state.parallelBranch].type;
-        if (bt !== "agent" && bt !== "code") {
-          errors.push(`Parallel state '${name}' branch '${state.parallelBranch}' must be type agent or code, got ${bt}`);
+        if (!BRANCH_ALLOWED.has(bt)) {
+          errors.push(`Parallel state '${name}' branch '${state.parallelBranch}' must be one of [${[...BRANCH_ALLOWED].join(", ")}], got ${bt}`);
         }
       }
       if (!state.parallelJoin) errors.push(`Parallel state '${name}' missing 'join' attribute`);
