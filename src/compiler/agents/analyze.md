@@ -1,18 +1,63 @@
-# analyze — design a reharness workflow from a description
+# analyze — design + enrich + write three artifacts
 
-You receive a natural-language description of a recurring AI task. Your job is to design a deterministic FSM workflow for it and produce two artifacts.
+You receive a natural-language description of a recurring AI task. Your job is to design a deterministic FSM workflow for it **and enrich it with domain best-practices the user did not explicitly ask for** — the compiler is a partner, not a literal transpiler.
 
-## Output files (write into `.reharness/generate/`)
+You write **three** artifacts into `.reharness/generate/`. They have different audiences and must be edited as a coherent set.
 
-1. **`scope.md`** — structured scope document. Sections:
-   - **Input → Output** — what the user provides and what the result is
-   - **Stages** — every step from input to output. For each: `code` (mechanical: read/write/parse/validate) or `agent` (needs reasoning). Maximize `code` — if in doubt, it is probably code.
-   - **Constraints** — concrete prohibitions and invariants
-   - **Artifacts** — what each stage writes for the next
-   - **Verification** — deterministic checks that prove the result is correct
-   - **Instance variability** — what changes per run vs. stays constant
+## Workflow
 
-2. **`draft-skeleton.xml`** — XML skeleton in the reharness format. Reference:
+1. **Read the user's description** (in `config.input`).
+2. **Read any feedback files** in `.reharness/feedback/` — earlier review rounds, if present.
+3. **Domain research**: think about the task domain. What patterns are common in this kind of pipeline? What edge cases bite people who build it for the first time? What features does the user almost certainly need but probably forgot to mention (timeouts, retries, error handling, observability, graceful degradation, per-component model routing, …)?
+4. **Decide what to enrich**. Each suggested addition must have a clear *why* the user would want it. If you can't justify it, drop it.
+5. **Write the three artifacts** below.
+
+## Artifact 1: `plan.md` — human-readable, shown at approval
+
+This is what the **user reads** at the approval checkpoint to decide if the compiler understood and to remove things they don't want. Plain English, no technical jargon, no XML, no code. Concise.
+
+Structure:
+
+```markdown
+# Plan: <one-line task description>
+
+## What I will build (core, from your prompt)
+- <Step in plain English>
+- <Step in plain English>
+- ...
+
+## Suggested additions (best-practice — you can ask me to drop any)
+- **<Feature>** — <one-sentence why>. <One-sentence what>.
+- **<Feature>** — ...
+
+## Out of scope (explicitly not building)
+- <Thing I considered but decided against, with brief reason>
+
+## How it runs
+<2-3 sentences describing the user-visible flow: what they invoke, what files they provide, what they get.>
+```
+
+The "Suggested additions" section is where enrichment lives. Examples for a code-review pipeline: bounded retry on rate-limit errors, debate-mode option, env-var preflight, per-reviewer max-turns budget, session logging for replay. Each tied to a concrete reason the user benefits.
+
+The "Out of scope" section is where you make your *non*-decisions visible. If the original of this task category (e.g. nitpicker for code review) has feature X and you decided not to include it, say so and why — this prevents the user from being surprised later.
+
+## Artifact 2: `scope.md` — technical spec for downstream LLM steps
+
+This is what `fill_prompts` and `review` agents read to do their jobs. Technical, detailed, explicit.
+
+Sections:
+
+- **Input → Output** — what config/CLI args, what files written
+- **Stages** — every step from input to output. For each: `code` (mechanical) / `agent` (reasoning) / `interactive` (chat) / `parallel` / `loop` / `switch` / `set` / `check` / `approval` / `call` / `wait`. Maximize `code` — if in doubt, it is probably code.
+- **Constraints** — concrete prohibitions, invariants, ordering rules
+- **Artifacts** — what each stage writes for the next, exact paths
+- **Verification** — deterministic checks that prove the result is correct
+- **Instance variability** — what changes per run vs. stays constant
+- **Wiring contract** — for every config field / data flow / per-stage option you mention as supported, name exactly which lib function reads it and which agent call (with `opts.X`) consumes it. The `review` step verifies this section against the actual code.
+
+## Artifact 3: `draft-skeleton.xml` — codegen-ready XML topology
+
+XML skeleton in the reharness format. Reference:
 
 ```xml
 <skeleton id="my-cmd" initial="first" format-version="0.1">
@@ -38,135 +83,37 @@ You receive a natural-language description of a recurring AI task. Your job is t
 - **`check`** — sugar over switch with 2 branches: `<state type="check" expr="EXPR"><on event="TRUE" target=.../><on event="FALSE" target=.../></state>`.
 - **`parallel`** — fan out over an array. `<state type="parallel" over="config.x" branch="run_one" join="aggregate" concurrency="8" />`. Runs `branch` state once per item with `ctx.branchInput`/`ctx.branchIndex`/`ctx.branchDir`. After all settle, `ctx.data.branches = [{index, input, dir, ok, error?}]` and transitions to `join`. Branch state's own `on` is ignored. Per-branch errors are captured, not fatal. **Codegen auto-wires agents**: if a `branch` is an `agent`, its task automatically includes `branchInput`/`branchIndex`/`branchDir`, and if `branchInput.model` exists it becomes `opts.model` (per-branch LLM routing). If a `join` is an `agent`, its task automatically includes `data.branches`. Agent prompts (`.md`) should reference these directly (e.g. "Read your input from the branch input you were given. Write your output to your branch directory.").
 - **`loop`** — bounded iteration. `<state type="loop" max="5" exit="data.agreed" join="aggregate"><step state="actor"/><step state="critic"/></state>`. Per iteration runs each step in order. After iteration: increment iter, eval `exit` expression — truthy or `iter >= max` → transition to `join`. `ctx.data.iteration` exposes the current 0-based iteration to steps. Step state's own `on` is ignored. Needs at least one of `max` or `exit`. **Use for**: actor-critic debate, refinement loops, polling. **Codegen auto-wires agents**: step-role agents get task with `c.data.iteration` automatically.
-
-## Per-state timeout
-
-Any non-routing state (`agent`, `interactive`, `code`, `parallel`, `loop`, `call`, `approval`) accepts a `timeout` attribute. The runtime aborts the state via `AbortSignal` when the timeout fires; if `<on event="TIMEOUT" target=.../>` is declared, transitions there — otherwise the pipeline fails with a clear error.
-
-```xml
-<state name="long_review" type="agent" timeout="2m">
-  <on event="DONE"    target="aggregate" />
-  <on event="TIMEOUT" target="fallback" />
-</state>
-
-<state name="async_run" type="parallel" timeout="10m"
-       over="config.tasks" branch="run_one" join="done">
-  <on event="TIMEOUT" target="abort_handler" />
-</state>
-```
-
-Duration syntax: `100ms`, `30s`, `5m`, `1h`. Forbidden on `switch`, `set`, `final`, `wait` (the last has mode-specific `timeout` attribute already).
-
-## Nested composition
-
-`parallel.branch` and `loop.steps` can themselves be `parallel` or `loop` states — they are not limited to `agent`/`code`. Allowed types:
-
-| Slot | Allowed types |
-|---|---|
-| `parallel.branch` | agent, code, set, parallel, loop |
-| `loop.steps`      | agent, code, set, approval, parallel, loop |
-
-Examples:
-- **`parallel`-of-`loop`** — multi-debate ensemble: N independent actor-critic sessions run in parallel, aggregator synthesizes.
-- **`loop`-of-`parallel`** — iterative refinement with N parallel evaluators each round, exit when consensus.
-- **`parallel`-of-`parallel`** — hierarchical fan-out (e.g. parallel over modules, each module fans out over files).
-
-Branch/step state's own `on` transitions are still ignored when invoked via `parallel`/`loop`. Approval inside `parallel.branch` is forbidden (terminal-stdin contention); inside `loop.step` it is allowed (sequential execution).
-- **`approval`** — runtime pause + checkpoint. Needs `<prompt>` and optional `<artifacts><show path=.../></artifacts>` + `auto-event`.
 - **`wait`** — suspend until an external signal. `mode="timer|file|shell|webhook"`. Modes:
   - `timer`: `<state type="wait" mode="timer" duration="30s"><on event="DONE" target="next"/></state>`
   - `file`: `<state type="wait" mode="file" path="output/done.flag" timeout="5m" poll-interval="2s"><on event="DONE".../><on event="TIMEOUT".../></state>`
   - `shell`: `<state type="wait" mode="shell" command="gh run watch" timeout="20m"><on event="DONE".../><on event="ERROR".../><on event="TIMEOUT".../></state>` (exit 0 → DONE, non-zero → ERROR)
   - `webhook`: `<state type="wait" mode="webhook" port="3000" path="/cb" timeout="30m"><on event="DONE".../><on event="TIMEOUT".../></state>` (any POST to `:port<path>` → DONE; body in `data.webhookBody`, headers in `data.webhookHeaders`)
-  Use for async deploy pipelines, CI watches, scheduled wake-ups, third-party callbacks.
-- **`call`** — invoke another skeleton as a sub-pipeline. `<state type="call" skeleton="sub-id" args="['arg1', config.x]"><on event="success" target="next"/><on event="error" target="handle"/></state>`. Sub runs fully independent (own data, own log dir under sub's `logs/`), inherits abort signal / approval handler / model. Sub-pipeline status (`success`/`error`) maps to the `on` event. Use for **reuse** (shared sub-flows), **encapsulation** (large pipelines split), and **meta-circular calls**. Target skeleton must exist in the same `.reharness/skeletons/`.
+- **`call`** — invoke another skeleton as a sub-pipeline. `<state type="call" skeleton="sub-id" args="['arg1', config.x]"><on event="success" target="next"/><on event="error" target="handle"/></state>`. Sub runs fully independent (own data, own log dir under sub's `logs/`), inherits abort signal / approval handler / model. Sub-pipeline status (`success`/`error`) maps to the `on` event. Target skeleton must exist in the same `.reharness/skeletons/`.
+- **`approval`** — runtime pause + checkpoint. Needs `<prompt>` and optional `<artifacts><show path=.../></artifacts>` + `auto-event`.
 - **`final`** — terminal (`status="success" | "error"`).
 
-## Guard expressions (in `<go guard="...">`, `<state type="check" expr="...">`, `<data value="...">`)
+## Per-state timeout
+
+Any non-routing state accepts a `timeout` attribute. Add it as a best-practice when an agent or sub-pipeline may run long.
+
+## Guard expressions
 
 Subset of JavaScript:
-- Identifiers: only `config.*`, `data.*`, `retries.<key>` (member access OK: `config.target`, `data.user.name`)
-- Operators: `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`
-- Literals: `'string'`, `42`, `true`, `false`, `null`
-- Grouping: `(...)`
+- Identifiers: only `config.*`, `data.*`, `retries.<key>` (member access OK)
+- Operators: `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`, `+`, `-`, `*`, `/`
+- Literals: strings, numbers, true, false, null
+- Arrays: `[a, b, c]`
 
-No function calls, no assignment, no ternary. If you need complex logic — use a `code` state.
+No function calls, no assignment, no ternary.
 
-## Examples
+## Nested composition
 
-```xml
-<!-- Declarative routing -->
-<state name="route" type="switch">
-  <go target="mobile_flow" guard="config.target == 'mobile'" />
-  <go target="web_flow"    guard="config.target == 'web'" />
-  <go target="error" />
-</state>
-
-<!-- Bounded loop via data + check -->
-<state name="iterate" type="code">
-  <on event="DONE" target="check_done" />
-</state>
-<state name="check_done" type="check" expr="data.count < 10">
-  <on event="TRUE"  target="iterate" />
-  <on event="FALSE" target="finish" />
-</state>
-
-<!-- Init data before branching -->
-<state name="init" type="set">
-  <data key="phase" value="'analysis'" />
-  <data key="count" value="0" />
-  <on event="DONE" target="route" />
-</state>
-
-<!-- Bounded retry (special-case guard, auto-increments counter) -->
-<on event="FAIL">
-  <go target="retry" retries-key="K" retries-max="3" />
-  <go target="error" />
-</on>
-
-<!-- Parallel fan-out (multi-model code review pattern) -->
-<state name="review_all" type="parallel"
-       over="config.reviewers" branch="review_one" join="aggregate" concurrency="8" />
-
-<state name="review_one" type="agent">
-  <!-- prompt should reference ctx.branchInput (the reviewer config item),
-       and write its result to ctx.branchDir/output.md -->
-  <on event="DONE" target="aggregate" />  <!-- this transition is ignored when called as a branch -->
-</state>
-
-<state name="aggregate" type="agent">
-  <!-- reads ctx.data.branches = [{index, input, dir, ok, error?}, ...]
-       reads each branch's output.md from disk, synthesizes a final verdict -->
-  <on event="DONE" target="done" />
-</state>
-
-<!-- Actor-critic debate with bounded rounds + early exit -->
-<state name="init" type="set">
-  <data key="agreed" value="false" />
-  <on event="DONE" target="rounds" />
-</state>
-
-<state name="rounds" type="loop" max="5" exit="data.agreed" join="final_synthesis">
-  <step state="actor" />
-  <step state="critic" />
-  <step state="check_agree" />  <!-- code state: reads critic's output, sets data.agreed if AGREE -->
-</state>
-
-<state name="actor"  type="agent"><on event="DONE" target="critic" /></state>
-<state name="critic" type="agent"><on event="DONE" target="check_agree" /></state>
-<state name="check_agree" type="code"><on event="DONE" target="rounds" /></state>
-<state name="final_synthesis" type="agent"><on event="DONE" target="done" /></state>
-```
-
-## Inputs you get
-
-- `config.input` — the user's description
-- If prior revisions exist: read all files in `.reharness/feedback/` and address every point.
+`parallel.branch` and `loop.steps` can themselves be `parallel`/`loop`/`set`/`code`/`agent` (loop.steps also accepts `approval`).
 
 ## Rules
 
-- Skeleton `id` must be a kebab-case identifier (not `generate`, not `evolve` — reserved).
-- Every code state needs deterministic logic the runtime can call.
-- Every agent state must have a clear purpose; collapse "thin" agent states into code states.
-- Always include a `done` (final/success) and an `error` (final/error) state.
-- Bound every retry loop with `retries-key=... retries-max=N` guards.
+- Skeleton `id` must be kebab-case, not `generate` or `evolve` (reserved).
+- Always include `done` (final/success) and `error` (final/error) states.
+- Bound every retry loop with `retries-key/retries-max`.
+- Every claim you put in `plan.md` and `scope.md` must be reflected in `draft-skeleton.xml` and reachable by the downstream `fill_prompts` step. The `review` agent will fail you if scope says X and code does not implement X.
+- Suggested additions in `plan.md` must also be in `scope.md` (as marked stages) and `draft-skeleton.xml` (as states). If user declines an addition at the approval checkpoint, the `discuss` step will remove it from all three.

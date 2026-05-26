@@ -11,6 +11,7 @@ import { verifyGenerated } from "./verify.js";
 const BUILTIN_AGENTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "agents");
 const RESERVED_IDS = new Set(["generate", "evolve"]);
 
+const PLAN = ".reharness/generate/plan.md";
 const SCOPE = ".reharness/generate/scope.md";
 const DRAFT = ".reharness/generate/draft-skeleton.xml";
 const REVIEW = ".reharness/generate/review-report.md";
@@ -41,8 +42,10 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
         entry: async (c) => {
           mkdirSync(genDir, { recursive: true });
           await c.agent("analyze",
-            `Design a reharness FSM workflow for:\n\n${c.config.input}\n\n` +
-            `Write \`${SCOPE}\` and \`${DRAFT}\`.`,
+            `Design and enrich a reharness FSM workflow for:\n\n${c.config.input}\n\n` +
+            `Write THREE artifacts to .reharness/generate/: plan.md (human-readable, shown at approval), ` +
+            `scope.md (technical LLM-spec), draft-skeleton.xml (codegen XML). ` +
+            `The plan.md must enumerate core features + suggested best-practice additions separately, so the user can drop additions they don't want.`,
           );
         },
         on: "review_design",
@@ -50,8 +53,8 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
 
       review_design: {
         type: "approval",
-        prompt: "Review the proposed scope and draft skeleton. Approve to proceed, or revise to enter an interactive refinement session.",
-        artifacts: [SCOPE, DRAFT],
+        prompt: "Review the plan. Approve to proceed, or revise to enter an interactive refinement session (where you can drop suggested features, rename steps, etc).",
+        artifacts: [PLAN],
         autoEvent: "APPROVED",
         on: { APPROVED: "construct", REVISED: "discuss" },
       },
@@ -59,9 +62,9 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
       discuss: {
         entry: async (c) => {
           await c.interactive("discuss",
-            `The user rejected the current draft. Discuss what needs to change and update ${SCOPE} and ${DRAFT}. ` +
-            `Edit ONLY those two files. Original task:\n\n${c.config.input}`,
-            { artifacts: [SCOPE, DRAFT] },
+            `The user rejected the current plan. Discuss what needs to change and update ${PLAN}, ${SCOPE}, and ${DRAFT} consistently. ` +
+            `Edit ONLY those three files. Original task:\n\n${c.config.input}`,
+            { artifacts: [PLAN, SCOPE, DRAFT] },
           );
         },
         on: "review_design",

@@ -7,10 +7,9 @@
   </state>
 
   <state name="review_design" type="approval" auto-event="APPROVED">
-    <prompt>Review the proposed scope and draft skeleton. Approve to proceed, or revise to enter an interactive refinement session.</prompt>
+    <prompt>Review the plan. Approve to proceed, or revise to enter an interactive refinement session (where you can drop suggested features, rename steps, etc).</prompt>
     <artifacts>
-      <show path=".reharness/generate/scope.md" />
-      <show path=".reharness/generate/draft-skeleton.xml" />
+      <show path=".reharness/generate/plan.md" />
     </artifacts>
     <on event="APPROVED" target="construct" />
     <on event="REVISED" target="discuss" />
@@ -18,6 +17,7 @@
 
   <state name="discuss" type="interactive">
     <artifacts>
+      <edit path=".reharness/generate/plan.md" />
       <edit path=".reharness/generate/scope.md" />
       <edit path=".reharness/generate/draft-skeleton.xml" />
     </artifacts>
