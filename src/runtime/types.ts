@@ -50,6 +50,25 @@ export interface LoopState<C extends Record<string, any> = Record<string, any>> 
   exit?: (ctx: StateContext<C>) => boolean;
 }
 
+/** Wait: suspend until an external signal (timer / file / shell exit / webhook POST). Transitions on DONE/TIMEOUT/ERROR. */
+export interface WaitState<C extends Record<string, any> = Record<string, any>> {
+  type: "wait";
+  mode: "timer" | "file" | "shell" | "webhook";
+  /** ms — for timer mode. */
+  durationMs?: number;
+  /** ms — across all modes that can time out. */
+  timeoutMs?: number;
+  /** file mode: absolute or cwd-relative file path. webhook mode: HTTP URL path. */
+  path?: string;
+  /** shell mode: command line. */
+  command?: string;
+  /** webhook mode: TCP port to listen on. */
+  port?: number;
+  /** file mode: poll interval in ms (default 1000). */
+  pollIntervalMs?: number;
+  on: TransitionMap<C>;
+}
+
 /** Call: invoke another skeleton's command as a sub-pipeline. Transitions by sub-pipeline status. */
 export interface CallState<C extends Record<string, any> = Record<string, any>> {
   type: "call";
@@ -99,6 +118,7 @@ export type StateDefinition<C extends Record<string, any> = Record<string, any>>
   | ParallelState<C>
   | LoopState<C>
   | CallState<C>
+  | WaitState<C>
   | FinalState<C>;
 
 export interface PipelineDefinition<C extends Record<string, any> = Record<string, any>> {

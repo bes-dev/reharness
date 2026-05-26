@@ -55,6 +55,12 @@ Examples:
 
 Branch/step state's own `on` transitions are still ignored when invoked via `parallel`/`loop`. Approval inside `parallel.branch` is forbidden (terminal-stdin contention); inside `loop.step` it is allowed (sequential execution).
 - **`approval`** — runtime pause + checkpoint. Needs `<prompt>` and optional `<artifacts><show path=.../></artifacts>` + `auto-event`.
+- **`wait`** — suspend until an external signal. `mode="timer|file|shell|webhook"`. Modes:
+  - `timer`: `<state type="wait" mode="timer" duration="30s"><on event="DONE" target="next"/></state>`
+  - `file`: `<state type="wait" mode="file" path="output/done.flag" timeout="5m" poll-interval="2s"><on event="DONE".../><on event="TIMEOUT".../></state>`
+  - `shell`: `<state type="wait" mode="shell" command="gh run watch" timeout="20m"><on event="DONE".../><on event="ERROR".../><on event="TIMEOUT".../></state>` (exit 0 → DONE, non-zero → ERROR)
+  - `webhook`: `<state type="wait" mode="webhook" port="3000" path="/cb" timeout="30m"><on event="DONE".../><on event="TIMEOUT".../></state>` (any POST to `:port<path>` → DONE; body in `data.webhookBody`, headers in `data.webhookHeaders`)
+  Use for async deploy pipelines, CI watches, scheduled wake-ups, third-party callbacks.
 - **`call`** — invoke another skeleton as a sub-pipeline. `<state type="call" skeleton="sub-id" args="['arg1', config.x]"><on event="success" target="next"/><on event="error" target="handle"/></state>`. Sub runs fully independent (own data, own log dir under sub's `logs/`), inherits abort signal / approval handler / model. Sub-pipeline status (`success`/`error`) maps to the `on` event. Use for **reuse** (shared sub-flows), **encapsulation** (large pipelines split), and **meta-circular calls**. Target skeleton must exist in the same `.reharness/skeletons/`.
 - **`final`** — terminal (`status="success" | "error"`).
 

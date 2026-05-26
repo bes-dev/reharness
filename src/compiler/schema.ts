@@ -19,8 +19,10 @@ export interface DataAssignment {
   value: string;
 }
 
+export type WaitMode = "timer" | "file" | "shell" | "webhook";
+
 export interface SkeletonState {
-  type: "agent" | "interactive" | "code" | "approval" | "switch" | "set" | "parallel" | "loop" | "call" | "final";
+  type: "agent" | "interactive" | "code" | "approval" | "switch" | "set" | "parallel" | "loop" | "call" | "wait" | "final";
   status?: "success" | "error";
   on?: Record<string, string | GuardedTransition[]>;
   /** Approval only: prompt text shown at the checkpoint. */
@@ -51,6 +53,19 @@ export interface SkeletonState {
   callSkeleton?: string;
   /** Call only: expression returning string[] of CLI args for the sub-pipeline. */
   callArgsExpr?: string;
+  /** Wait only. */
+  waitMode?: WaitMode;
+  /** Wait timer/file/shell/webhook: duration (e.g. "30s") or absolute timeout. */
+  waitDuration?: string;
+  waitTimeout?: string;
+  /** Wait file: path to watch. Wait webhook: HTTP URL path (e.g. "/cb"). */
+  waitPath?: string;
+  /** Wait shell: command line. */
+  waitCommand?: string;
+  /** Wait webhook: TCP port. */
+  waitPort?: number;
+  /** Wait file: poll interval (default "1s"). */
+  waitPollInterval?: string;
 }
 
 export interface Skeleton {
@@ -131,6 +146,26 @@ export function validateSkeleton(sk: Skeleton): string[] {
         catch (e: any) { errors.push(`Loop state '${name}' exit expr invalid: ${e.message}`); }
       }
       continue;
+    }
+
+    if (state.type === "wait") {
+      const mode = state.waitMode;
+      if (!mode) errors.push(`Wait state '${name}' missing 'mode' attribute`);
+      else if (!["timer", "file", "shell", "webhook"].includes(mode)) {
+        errors.push(`Wait state '${name}' invalid mode '${mode}' (expected timer|file|shell|webhook)`);
+      } else {
+        if (mode === "timer" && !state.waitDuration) errors.push(`Wait '${name}' mode=timer needs 'duration'`);
+        if (mode === "file" && !state.waitPath) errors.push(`Wait '${name}' mode=file needs 'path'`);
+        if (mode === "shell" && !state.waitCommand) errors.push(`Wait '${name}' mode=shell needs 'command'`);
+        if (mode === "webhook") {
+          if (!state.waitPort) errors.push(`Wait '${name}' mode=webhook needs 'port'`);
+          if (!state.waitPath) errors.push(`Wait '${name}' mode=webhook needs 'path'`);
+        }
+      }
+      for (const d of [state.waitDuration, state.waitTimeout, state.waitPollInterval]) {
+        if (d && !/^\d+\s*(ms|s|m|h)$/.test(d)) errors.push(`Wait '${name}' invalid duration '${d}' (expected e.g. "30s", "5m", "1h")`);
+      }
+      if (!state.on?.["DONE"]) errors.push(`Wait '${name}' must declare <on event="DONE" .../>`);
     }
 
     if (state.type === "call") {

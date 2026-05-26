@@ -35,6 +35,34 @@ export function parseSkeletonXML(xml: string): Skeleton {
 function parseState(name: string, raw: any): SkeletonState {
   const type = raw["@_type"];
 
+  if (type === "wait") {
+    const st: SkeletonState = {
+      type: "wait",
+      waitMode: raw["@_mode"] as any,
+    };
+    if (raw["@_duration"]) st.waitDuration = raw["@_duration"];
+    if (raw["@_timeout"]) st.waitTimeout = raw["@_timeout"];
+    if (raw["@_path"]) st.waitPath = raw["@_path"];
+    if (raw["@_command"]) st.waitCommand = raw["@_command"];
+    if (raw["@_port"]) {
+      const n = parseInt(raw["@_port"], 10);
+      if (!Number.isFinite(n)) throw new Error(`Wait state '${name}' port must be a number`);
+      st.waitPort = n;
+    }
+    if (raw["@_poll-interval"]) st.waitPollInterval = raw["@_poll-interval"];
+    if (raw.on) {
+      st.on = {};
+      for (const on of raw.on) {
+        const event = on["@_event"];
+        if (!event) throw new Error(`<on> missing event in state '${name}'`);
+        if (on["@_target"]) st.on[event] = on["@_target"];
+        else if (on.go) st.on[event] = parseBranches(on.go, name);
+        else throw new Error(`<on event="${event}"> in state '${name}' has no target`);
+      }
+    }
+    return st;
+  }
+
   if (type === "call") {
     const skState: SkeletonState = {
       type: "call",
@@ -192,6 +220,27 @@ export function serializeSkeletonXML(skeleton: Skeleton): string {
 
     const stateAttrs = [`name="${esc(name)}"`, `type="${state.type}"`];
     if (state.type === "approval" && state.autoEvent) stateAttrs.push(`auto-event="${esc(state.autoEvent)}"`);
+    if (state.type === "wait") {
+      if (state.waitMode) stateAttrs.push(`mode="${state.waitMode}"`);
+      if (state.waitDuration) stateAttrs.push(`duration="${esc(state.waitDuration)}"`);
+      if (state.waitTimeout) stateAttrs.push(`timeout="${esc(state.waitTimeout)}"`);
+      if (state.waitPath) stateAttrs.push(`path="${esc(state.waitPath)}"`);
+      if (state.waitCommand) stateAttrs.push(`command="${esc(state.waitCommand)}"`);
+      if (state.waitPort !== undefined) stateAttrs.push(`port="${state.waitPort}"`);
+      if (state.waitPollInterval) stateAttrs.push(`poll-interval="${esc(state.waitPollInterval)}"`);
+      lines.push(`  <state ${stateAttrs.join(" ")}>`);
+      for (const [event, target] of Object.entries(state.on || {})) {
+        if (typeof target === "string") lines.push(`    <on event="${esc(event)}" target="${esc(target)}" />`);
+        else {
+          lines.push(`    <on event="${esc(event)}">`);
+          for (const gt of target) lines.push(`      ${emitGo(gt)}`);
+          lines.push(`    </on>`);
+        }
+      }
+      lines.push(`  </state>`);
+      continue;
+    }
+
     if (state.type === "call") {
       if (state.callSkeleton) stateAttrs.push(`skeleton="${esc(state.callSkeleton)}"`);
       if (state.callArgsExpr) stateAttrs.push(`args="${esc(state.callArgsExpr)}"`);

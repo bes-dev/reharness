@@ -1,9 +1,10 @@
-import { execSync } from "child_process";
+import { execSync, spawn } from "child_process";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "fs";
 import { resolve, isAbsolute } from "path";
+import { createServer } from "http";
 import type {
   PipelineDefinition, StateContext, Pipeline, RunOptions,
-  ActiveState, ApprovalState, SwitchState, ParallelState, LoopState, CallState, FinalState, StateDefinition, TransitionTarget,
+  ActiveState, ApprovalState, SwitchState, ParallelState, LoopState, CallState, WaitState, FinalState, StateDefinition, TransitionTarget,
   ApprovalCheckpoint, BranchResult,
 } from "./types.js";
 import { runAgent, runInteractive } from "./agent.js";
@@ -55,6 +56,8 @@ const isLoop = <C extends Record<string, any>>(s: StateDefinition<C>): s is Loop
   "type" in s && s.type === "loop";
 const isCall = <C extends Record<string, any>>(s: StateDefinition<C>): s is CallState<C> =>
   "type" in s && s.type === "call";
+const isWait = <C extends Record<string, any>>(s: StateDefinition<C>): s is WaitState<C> =>
+  "type" in s && s.type === "wait";
 
 function resolveTarget<C extends Record<string, any>>(t: TransitionTarget<C>, ctx: StateContext<C>): string | null {
   if (typeof t === "string") return t;
@@ -104,6 +107,11 @@ function validate<C extends Record<string, any>>(def: PipelineDefinition<C>): vo
       for (const ev of ["success", "error"]) {
         if (!state.on?.[ev]) errors.push(`Call "${name}" missing on event "${ev}"`);
       }
+      continue;
+    }
+
+    if (isWait(state)) {
+      if (!state.on?.["DONE"]) errors.push(`Wait "${name}" missing on event "DONE"`);
       continue;
     }
 
@@ -368,6 +376,81 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
       return resolution.event;
     }
 
+    async function runWait(state: WaitState<C>, name: string, isoCtx: StateContext<C>): Promise<string> {
+      const checkAborted = () => { if (signal?.aborted) throw new Error("Aborted"); };
+      const timeoutMs = state.timeoutMs;
+
+      if (state.mode === "timer") {
+        const ms = state.durationMs || 0;
+        emit(`▷ wait ${name}: timer ${ms}ms`);
+        await new Promise<void>((res, rej) => {
+          const t = setTimeout(res, ms);
+          signal?.addEventListener("abort", () => { clearTimeout(t); rej(new Error("Aborted")); }, { once: true });
+        });
+        checkAborted();
+        return "DONE";
+      }
+
+      if (state.mode === "file") {
+        const fullPath = isAbsolute(state.path!) ? state.path! : resolve(cwd, state.path!);
+        const interval = state.pollIntervalMs || 1000;
+        emit(`▷ wait ${name}: file ${state.path} (poll ${interval}ms)`);
+        const start = Date.now();
+        while (true) {
+          checkAborted();
+          if (existsSync(fullPath)) return "DONE";
+          if (timeoutMs && Date.now() - start > timeoutMs) return "TIMEOUT";
+          await new Promise<void>(r => setTimeout(r, interval));
+        }
+      }
+
+      if (state.mode === "shell") {
+        emit(`▷ wait ${name}: shell ${state.command}`);
+        return await new Promise<string>((res, rej) => {
+          const proc = spawn("sh", ["-c", state.command!], { cwd, stdio: ["ignore", "inherit", "inherit"] });
+          const onAbort = () => proc.kill("SIGTERM");
+          signal?.addEventListener("abort", onAbort, { once: true });
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          let timedOut = false;
+          if (timeoutMs) timer = setTimeout(() => { timedOut = true; proc.kill("SIGTERM"); }, timeoutMs);
+          proc.on("close", (code) => {
+            if (timer) clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
+            if (signal?.aborted) rej(new Error("Aborted"));
+            else if (timedOut) res("TIMEOUT");
+            else res(code === 0 ? "DONE" : "ERROR");
+          });
+          proc.on("error", rej);
+        });
+      }
+
+      if (state.mode === "webhook") {
+        const port = state.port!;
+        const path = state.path!;
+        emit(`▷ wait ${name}: webhook :${port}${path}`);
+        return await new Promise<string>((res, rej) => {
+          const server = createServer((req, response) => {
+            if (req.url !== path) { response.statusCode = 404; response.end(); return; }
+            let body = "";
+            req.on("data", (chunk) => { body += chunk; });
+            req.on("end", () => {
+              response.statusCode = 200; response.end("OK");
+              isoCtx.data.webhookBody = body;
+              isoCtx.data.webhookHeaders = req.headers;
+              server.close(() => res("DONE"));
+            });
+          });
+          server.on("error", rej);
+          server.listen(port);
+          const onAbort = () => server.close(() => rej(new Error("Aborted")));
+          signal?.addEventListener("abort", onAbort, { once: true });
+          if (timeoutMs) setTimeout(() => server.close(() => res("TIMEOUT")), timeoutMs);
+        });
+      }
+
+      throw new Error(`Wait state '${name}' has unknown mode '${(state as any).mode}'`);
+    }
+
     /** Execute a single state without following its on-transitions. Used by parallel.branch and loop.step. */
     async function executeStateOnce(name: string, isoCtx: StateContext<C>): Promise<void> {
       const state = def.states[name];
@@ -377,6 +460,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
       if (isApproval(state)) { await runApproval(state, name, isoCtx); return; }
       if (isParallel(state)) { isoCtx.data.branches = await runParallel(state, name, isoCtx); return; }
       if (isLoop(state)) { isoCtx.data.iterations = await runLoop(state, name, isoCtx); return; }
+      if (isWait(state)) { isoCtx.data.waitEvent = await runWait(state, name, isoCtx); return; }
       // ActiveState (agent / code / set / interactive)
       await (state as ActiveState<C>).entry(isoCtx);
     }
@@ -441,6 +525,22 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
           if (signal?.aborted) return fail("⚠ Aborted by user");
           return fail(`✗ loop ${current}: ${err.message}`);
         }
+        continue;
+      }
+
+      if (isWait(state)) {
+        let event: string;
+        try { event = await runWait(state, current, ctx); }
+        catch (err: any) {
+          if (signal?.aborted) return fail("⚠ Aborted by user");
+          return fail(`✗ wait ${current}: ${err.message}`);
+        }
+        emit(`${event === "DONE" ? "✓" : "⚠"} wait ${current}: ${event}`);
+        const target = state.on[event];
+        if (!target) return fail(`✗ wait "${current}" event "${event}" has no transition`);
+        const next = resolveTarget(target, ctx);
+        if (!next) return fail(`✗ wait "${current}" event "${event}": no resolvable target`);
+        current = next;
         continue;
       }
 

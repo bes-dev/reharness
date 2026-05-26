@@ -153,6 +153,17 @@ function emitState(name: string, state: SkeletonState, role?: "branch" | "join" 
     const exitPart = state.exitExpr ? `, exit: (c) => (${compileGuardExpr(state.exitExpr)})` : "";
     return `        ${name}: { type: 'loop', steps: ${stepsJson}, join: '${state.parallelJoin}'${maxPart}${exitPart} },`;
   }
+  if (state.type === "wait") {
+    const parts: string[] = [`type: 'wait'`, `mode: ${JSON.stringify(state.waitMode)}`];
+    if (state.waitDuration) parts.push(`durationMs: ${parseDurationMs(state.waitDuration)}`);
+    if (state.waitTimeout) parts.push(`timeoutMs: ${parseDurationMs(state.waitTimeout)}`);
+    if (state.waitPath) parts.push(`path: ${JSON.stringify(state.waitPath)}`);
+    if (state.waitCommand) parts.push(`command: ${JSON.stringify(state.waitCommand)}`);
+    if (state.waitPort !== undefined) parts.push(`port: ${state.waitPort}`);
+    if (state.waitPollInterval) parts.push(`pollIntervalMs: ${parseDurationMs(state.waitPollInterval)}`);
+    parts.push(`on: ${emitTransitions(state.on || {})}`);
+    return `        ${name}: { ${parts.join(", ")} },`;
+  }
   if (state.type === "call") {
     const subId = state.callSkeleton!;
     const argsBody = state.callArgsExpr ? compileGuardExpr(state.callArgsExpr) : "[]";
@@ -320,6 +331,13 @@ function stubFn(name: string, events: string[]): string {
 
 function sanitizeId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_]/g, "_");
+}
+
+function parseDurationMs(s: string): number {
+  const m = s.match(/^(\d+)\s*(ms|s|m|h)$/);
+  if (!m) throw new Error(`Invalid duration: '${s}'`);
+  const n = parseInt(m[1], 10);
+  return m[2] === "ms" ? n : m[2] === "s" ? n * 1000 : m[2] === "m" ? n * 60_000 : n * 3_600_000;
 }
 
 function emitLib(sk: Skeleton, codeStates: string[]): string {

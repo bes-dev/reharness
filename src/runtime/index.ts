@@ -4,7 +4,7 @@ export { loadProject } from "./project.js";
 
 export type {
   PipelineDefinition, Pipeline, RunOptions,
-  StateDefinition, ActiveState, ApprovalState, SwitchState, ParallelState, LoopState, CallState, FinalState,
+  StateDefinition, ActiveState, ApprovalState, SwitchState, ParallelState, LoopState, CallState, WaitState, FinalState,
   BranchResult,
   StateContext, TransitionTarget, GuardedTransition,
   CommandDefinition, CommandContext, Project, AgentOpts,
