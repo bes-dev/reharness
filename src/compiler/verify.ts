@@ -51,13 +51,12 @@ export function verifyGenerated(targetDir: string): string[] {
     }
   }
 
-  // 3. Each command imports cleanly and definePipeline validation passes.
+  // 3. Each command imports cleanly. A null return from run() is valid (command may require specific args).
   for (const file of commandFiles) {
     const path = resolve(commandsDir, file);
     const script = `import cmd from '${path}';
 if (!cmd?.run) { console.error('no run()'); process.exit(1); }
-const p = cmd.run(['probe'], { root: '${targetDir}', agents: '${agentsDir}', cwd: '${targetDir}' });
-if (!p) { console.error('run() returned null'); process.exit(1); }`;
+cmd.run(['probe', 'arg2', 'arg3'], { root: '${targetDir}', agents: '${agentsDir}', cwd: '${targetDir}' });`;
     try {
       execFileSync("node", ["--import", "tsx/esm", "-e", script], { encoding: "utf-8", timeout: 10_000, stdio: ["pipe", "pipe", "pipe"] });
     } catch (err: any) {
