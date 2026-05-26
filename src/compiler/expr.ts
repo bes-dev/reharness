@@ -24,7 +24,7 @@ type Token =
   | { kind: "string"; value: string }
   | { kind: "number"; value: string }
   | { kind: "op"; value: string }
-  | { kind: "lparen" | "rparen" };
+  | { kind: "lparen" | "rparen" | "lbracket" | "rbracket" | "comma" };
 
 function tokenize(src: string): Token[] {
   const out: Token[] = [];
@@ -35,6 +35,9 @@ function tokenize(src: string): Token[] {
 
     if (c === "(") { out.push({ kind: "lparen" }); i++; continue; }
     if (c === ")") { out.push({ kind: "rparen" }); i++; continue; }
+    if (c === "[") { out.push({ kind: "lbracket" }); i++; continue; }
+    if (c === "]") { out.push({ kind: "rbracket" }); i++; continue; }
+    if (c === ",") { out.push({ kind: "comma" }); i++; continue; }
 
     if (c === "'" || c === '"') {
       let j = i + 1;
@@ -112,6 +115,9 @@ export function compileGuardExpr(src: string): string {
     if (t.kind === "number") return t.value;
     if (t.kind === "op") return t.value;
     if (t.kind === "lparen") return "(";
-    return ")";
+    if (t.kind === "rparen") return ")";
+    if (t.kind === "lbracket") return "[";
+    if (t.kind === "rbracket") return "]";
+    return ",";
   }).join(" ");
 }

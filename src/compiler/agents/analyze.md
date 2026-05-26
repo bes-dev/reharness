@@ -55,6 +55,7 @@ Examples:
 
 Branch/step state's own `on` transitions are still ignored when invoked via `parallel`/`loop`. Approval inside `parallel.branch` is forbidden (terminal-stdin contention); inside `loop.step` it is allowed (sequential execution).
 - **`approval`** — runtime pause + checkpoint. Needs `<prompt>` and optional `<artifacts><show path=.../></artifacts>` + `auto-event`.
+- **`call`** — invoke another skeleton as a sub-pipeline. `<state type="call" skeleton="sub-id" args="['arg1', config.x]"><on event="success" target="next"/><on event="error" target="handle"/></state>`. Sub runs fully independent (own data, own log dir under sub's `logs/`), inherits abort signal / approval handler / model. Sub-pipeline status (`success`/`error`) maps to the `on` event. Use for **reuse** (shared sub-flows), **encapsulation** (large pipelines split), and **meta-circular calls**. Target skeleton must exist in the same `.reharness/skeletons/`.
 - **`final`** — terminal (`status="success" | "error"`).
 
 ## Guard expressions (in `<go guard="...">`, `<state type="check" expr="...">`, `<data value="...">`)

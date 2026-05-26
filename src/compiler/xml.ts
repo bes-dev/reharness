@@ -35,6 +35,26 @@ export function parseSkeletonXML(xml: string): Skeleton {
 function parseState(name: string, raw: any): SkeletonState {
   const type = raw["@_type"];
 
+  if (type === "call") {
+    const skState: SkeletonState = {
+      type: "call",
+      callSkeleton: raw["@_skeleton"],
+    };
+    if (raw["@_args"]) skState.callArgsExpr = raw["@_args"];
+    // Call states still have `on` transitions for success/error — fall through to standard on parsing
+    if (raw.on) {
+      skState.on = {};
+      for (const on of raw.on) {
+        const event = on["@_event"];
+        if (!event) throw new Error(`<on> missing event in state '${name}'`);
+        if (on["@_target"]) skState.on[event] = on["@_target"];
+        else if (on.go) skState.on[event] = parseBranches(on.go, name);
+        else throw new Error(`<on event="${event}"> in state '${name}' has no target or guarded <go> children`);
+      }
+    }
+    return skState;
+  }
+
   if (type === "parallel") {
     const st: SkeletonState = {
       type: "parallel",
@@ -172,6 +192,22 @@ export function serializeSkeletonXML(skeleton: Skeleton): string {
 
     const stateAttrs = [`name="${esc(name)}"`, `type="${state.type}"`];
     if (state.type === "approval" && state.autoEvent) stateAttrs.push(`auto-event="${esc(state.autoEvent)}"`);
+    if (state.type === "call") {
+      if (state.callSkeleton) stateAttrs.push(`skeleton="${esc(state.callSkeleton)}"`);
+      if (state.callArgsExpr) stateAttrs.push(`args="${esc(state.callArgsExpr)}"`);
+      lines.push(`  <state ${stateAttrs.join(" ")}>`);
+      for (const [event, target] of Object.entries(state.on || {})) {
+        if (typeof target === "string") lines.push(`    <on event="${esc(event)}" target="${esc(target)}" />`);
+        else {
+          lines.push(`    <on event="${esc(event)}">`);
+          for (const gt of target) lines.push(`      ${emitGo(gt)}`);
+          lines.push(`    </on>`);
+        }
+      }
+      lines.push(`  </state>`);
+      continue;
+    }
+
     if (state.type === "parallel") {
       if (state.overExpr) stateAttrs.push(`over="${esc(state.overExpr)}"`);
       if (state.parallelBranch) stateAttrs.push(`branch="${esc(state.parallelBranch)}"`);

@@ -75,6 +75,16 @@ function emitCommand(sk: Skeleton, codeStates: string[]): string {
   const importsLib = codeStates.length
     ? `\nimport { ${codeStates.map(s => `${s}Entry`).join(", ")} } from '../lib/${sk.id}-states.js';`
     : "";
+
+  const calledSkeletons = Array.from(new Set(
+    Object.values(sk.states)
+      .filter((s): s is SkeletonState & { callSkeleton: string } => s.type === "call" && !!s.callSkeleton)
+      .map(s => s.callSkeleton),
+  ));
+  const importsCalls = calledSkeletons
+    .map(id => `import subCmd_${sanitizeId(id)} from './${id}.js';`)
+    .join("\n");
+
   const roles = new Map<string, "branch" | "join" | "step">();
   for (const s of Object.values(sk.states)) {
     if (s.type === "parallel") {
@@ -88,7 +98,7 @@ function emitCommand(sk: Skeleton, codeStates: string[]): string {
   }
   const stateBlocks = Object.entries(sk.states).map(([n, s]) => emitState(n, s, roles.get(n))).join("\n");
   return `import { defineCommand, definePipeline } from 'reharness';
-import { resolve } from 'path';${importsLib}
+import { resolve } from 'path';${importsLib}${importsCalls ? "\n" + importsCalls : ""}
 
 export default defineCommand({
   description: ${JSON.stringify(sk.description)},
@@ -142,6 +152,18 @@ function emitState(name: string, state: SkeletonState, role?: "branch" | "join" 
     const maxPart = state.maxIterations !== undefined ? `, max: ${state.maxIterations}` : "";
     const exitPart = state.exitExpr ? `, exit: (c) => (${compileGuardExpr(state.exitExpr)})` : "";
     return `        ${name}: { type: 'loop', steps: ${stepsJson}, join: '${state.parallelJoin}'${maxPart}${exitPart} },`;
+  }
+  if (state.type === "call") {
+    const subId = state.callSkeleton!;
+    const argsBody = state.callArgsExpr ? compileGuardExpr(state.callArgsExpr) : "[]";
+    const onObj = emitTransitions(state.on || {});
+    return `        ${name}: {
+          type: 'call',
+          skeleton: ${JSON.stringify(subId)},
+          argsFn: (c) => (${argsBody}),
+          callFactory: (callArgs) => subCmd_${sanitizeId(subId)}.run(callArgs, ctx),
+          on: ${onObj},
+        },`;
   }
   if (state.type === "set") {
     const assignments = (state.dataAssignments || [])
@@ -294,6 +316,10 @@ function stubFn(name: string, events: string[]): string {
   return '${events[0] || "DONE"}';
 }
 `;
+}
+
+function sanitizeId(id: string): string {
+  return id.replace(/[^a-zA-Z0-9_]/g, "_");
 }
 
 function emitLib(sk: Skeleton, codeStates: string[]): string {

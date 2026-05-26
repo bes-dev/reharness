@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 
 import { resolve, isAbsolute } from "path";
 import type {
   PipelineDefinition, StateContext, Pipeline, RunOptions,
-  ActiveState, ApprovalState, SwitchState, ParallelState, LoopState, FinalState, StateDefinition, TransitionTarget,
+  ActiveState, ApprovalState, SwitchState, ParallelState, LoopState, CallState, FinalState, StateDefinition, TransitionTarget,
   ApprovalCheckpoint, BranchResult,
 } from "./types.js";
 import { runAgent, runInteractive } from "./agent.js";
@@ -53,6 +53,8 @@ const isParallel = <C extends Record<string, any>>(s: StateDefinition<C>): s is 
   "type" in s && s.type === "parallel";
 const isLoop = <C extends Record<string, any>>(s: StateDefinition<C>): s is LoopState<C> =>
   "type" in s && s.type === "loop";
+const isCall = <C extends Record<string, any>>(s: StateDefinition<C>): s is CallState<C> =>
+  "type" in s && s.type === "call";
 
 function resolveTarget<C extends Record<string, any>>(t: TransitionTarget<C>, ctx: StateContext<C>): string | null {
   if (typeof t === "string") return t;
@@ -93,6 +95,15 @@ function validate<C extends Record<string, any>>(def: PipelineDefinition<C>): vo
       else for (const s of state.steps) if (!names.has(s)) errors.push(`Loop "${name}" step "${s}" does not exist`);
       if (!names.has(state.join)) errors.push(`Loop "${name}" join "${state.join}" does not exist`);
       if (!state.max && !state.exit) errors.push(`Loop "${name}" needs at least one of max/exit`);
+      continue;
+    }
+
+    if (isCall(state)) {
+      if (typeof state.callFactory !== "function") errors.push(`Call "${name}" missing callFactory`);
+      if (typeof state.argsFn !== "function") errors.push(`Call "${name}" missing argsFn`);
+      for (const ev of ["success", "error"]) {
+        if (!state.on?.[ev]) errors.push(`Call "${name}" missing on event "${ev}"`);
+      }
       continue;
     }
 
@@ -430,6 +441,40 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
           if (signal?.aborted) return fail("⚠ Aborted by user");
           return fail(`✗ loop ${current}: ${err.message}`);
         }
+        continue;
+      }
+
+      // Call — invoke another skeleton's pipeline as a sub-execution.
+      if (isCall(state)) {
+        let subArgs: string[];
+        try { subArgs = state.argsFn(ctx); }
+        catch (err: any) { return fail(`✗ call "${current}" args: ${err.message}`); }
+        if (!Array.isArray(subArgs)) return fail(`✗ call "${current}" args expression must return string[], got ${typeof subArgs}`);
+
+        emit(`▷ call ${current} → ${state.skeleton}(${subArgs.map(a => JSON.stringify(a)).join(", ")})`);
+        let subPipeline: Pipeline;
+        try { subPipeline = state.callFactory(subArgs); }
+        catch (err: any) { return fail(`✗ call "${current}": ${err.message}`); }
+
+        const subEmit = (msg: string) => emit(`  [${state.skeleton}] ${msg}`);
+        let subStatus: "success" | "error";
+        try {
+          subStatus = await subPipeline.run(subEmit, {
+            signal, onStatus, piModel,
+            autoApprove: opts.autoApprove,
+            approvalHandler: opts.approvalHandler,
+          });
+        } catch (err: any) {
+          if (signal?.aborted) return fail("⚠ Aborted by user");
+          return fail(`✗ call "${current}" crashed: ${err.message}`);
+        }
+        emit(`${subStatus === "success" ? "✓" : "✗"} call ${current}: ${subStatus}`);
+
+        const target = state.on[subStatus];
+        if (!target) return fail(`✗ call "${current}" status "${subStatus}" has no transition`);
+        const next = resolveTarget(target, ctx);
+        if (!next) return fail(`✗ call "${current}" status "${subStatus}": no resolvable target`);
+        current = next;
         continue;
       }
 

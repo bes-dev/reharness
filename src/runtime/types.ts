@@ -50,6 +50,19 @@ export interface LoopState<C extends Record<string, any> = Record<string, any>> 
   exit?: (ctx: StateContext<C>) => boolean;
 }
 
+/** Call: invoke another skeleton's command as a sub-pipeline. Transitions by sub-pipeline status. */
+export interface CallState<C extends Record<string, any> = Record<string, any>> {
+  type: "call";
+  /** Target skeleton id (for diagnostics/log prefix). */
+  skeleton: string;
+  /** Compute CLI args passed to the sub-command. */
+  argsFn: (ctx: StateContext<C>) => string[];
+  /** Factory that instantiates the sub-pipeline. Closure captures sub-command + parent CommandContext at codegen-time. */
+  callFactory: (args: string[]) => Pipeline;
+  /** Transitions keyed by sub-pipeline status (`success`, `error`). */
+  on: TransitionMap<C>;
+}
+
 /** Parallel: fan out over an array, run `branch` state per item, join after all settle. */
 export interface ParallelState<C extends Record<string, any> = Record<string, any>> {
   type: "parallel";
@@ -85,6 +98,7 @@ export type StateDefinition<C extends Record<string, any> = Record<string, any>>
   | SwitchState<C>
   | ParallelState<C>
   | LoopState<C>
+  | CallState<C>
   | FinalState<C>;
 
 export interface PipelineDefinition<C extends Record<string, any> = Record<string, any>> {

@@ -20,7 +20,7 @@ export interface DataAssignment {
 }
 
 export interface SkeletonState {
-  type: "agent" | "interactive" | "code" | "approval" | "switch" | "set" | "parallel" | "loop" | "final";
+  type: "agent" | "interactive" | "code" | "approval" | "switch" | "set" | "parallel" | "loop" | "call" | "final";
   status?: "success" | "error";
   on?: Record<string, string | GuardedTransition[]>;
   /** Approval only: prompt text shown at the checkpoint. */
@@ -47,6 +47,10 @@ export interface SkeletonState {
   maxIterations?: number;
   /** Loop only: expression evaluated after each iteration; truthy → exit to join. */
   exitExpr?: string;
+  /** Call only: skeleton id to invoke as a sub-pipeline. */
+  callSkeleton?: string;
+  /** Call only: expression returning string[] of CLI args for the sub-pipeline. */
+  callArgsExpr?: string;
 }
 
 export interface Skeleton {
@@ -127,6 +131,18 @@ export function validateSkeleton(sk: Skeleton): string[] {
         catch (e: any) { errors.push(`Loop state '${name}' exit expr invalid: ${e.message}`); }
       }
       continue;
+    }
+
+    if (state.type === "call") {
+      if (!state.callSkeleton) errors.push(`Call state '${name}' missing 'skeleton' attribute`);
+      if (state.callArgsExpr) {
+        try { compileGuardExpr(state.callArgsExpr); }
+        catch (e: any) { errors.push(`Call state '${name}' args expr invalid: ${e.message}`); }
+      }
+      if (!state.on || !state.on["success"] || !state.on["error"]) {
+        errors.push(`Call state '${name}' must declare both <on event="success" .../> and <on event="error" .../>`);
+      }
+      // Note: existence of target skeleton is checked at codegen time, not here.
     }
 
     if (state.type === "parallel") {
