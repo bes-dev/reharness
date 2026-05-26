@@ -19,6 +19,8 @@ export interface ActiveState<C extends Record<string, any> = Record<string, any>
   exit?: (ctx: StateContext<C>) => Promise<void>;
   /** `string` → shorthand for `{ DONE: target }`. */
   on: string | TransitionMap<C>;
+  /** Abort entry after this many ms; transitions to on.TIMEOUT (or fails if absent). */
+  timeoutMs?: number;
 }
 
 /** Approval checkpoint: pause, show artifacts, await chosen event. */
@@ -29,6 +31,7 @@ export interface ApprovalState<C extends Record<string, any> = Record<string, an
   /** Event used to resolve the checkpoint in auto-approve mode. */
   autoEvent?: string;
   on: TransitionMap<C>;
+  timeoutMs?: number;
 }
 
 /** Switch: declarative branching — no entry, runtime picks first branch whose guard is truthy. */
@@ -48,6 +51,9 @@ export interface LoopState<C extends Record<string, any> = Record<string, any>> 
   max?: number;
   /** Predicate evaluated after each iteration; truthy → exit to join. */
   exit?: (ctx: StateContext<C>) => boolean;
+  timeoutMs?: number;
+  /** Optional transitions — only `TIMEOUT` event is meaningful. */
+  on?: TransitionMap<C>;
 }
 
 /** Wait: suspend until an external signal (timer / file / shell exit / webhook POST). Transitions on DONE/TIMEOUT/ERROR. */
@@ -80,6 +86,7 @@ export interface CallState<C extends Record<string, any> = Record<string, any>> 
   callFactory: (args: string[]) => Pipeline;
   /** Transitions keyed by sub-pipeline status (`success`, `error`). */
   on: TransitionMap<C>;
+  timeoutMs?: number;
 }
 
 /** Parallel: fan out over an array, run `branch` state per item, join after all settle. */
@@ -93,6 +100,9 @@ export interface ParallelState<C extends Record<string, any> = Record<string, an
   join: string;
   /** Optional max concurrent branches (defaults to no cap). */
   concurrency?: number;
+  timeoutMs?: number;
+  /** Optional transitions — only `TIMEOUT` event is meaningful (other completions go to `join`). */
+  on?: TransitionMap<C>;
 }
 
 /** Per-branch result captured by a parallel state, available as `ctx.data.branches` in the join state. */
@@ -189,6 +199,8 @@ export interface StateContext<C extends Record<string, any> = Record<string, any
   data: Record<string, any>;
   runDir: string;
   runId: string;
+  /** Abort signal for the current state — combines pipeline-level and state-level timeouts. */
+  signal?: AbortSignal;
   /** Set only when invoked as a parallel branch: the current item from `over` expression. */
   branchInput?: any;
   /** Set only when invoked as a parallel branch: 0-based index. */

@@ -125,6 +125,14 @@ ${stateBlocks}
 }
 
 function emitState(name: string, state: SkeletonState, role?: "branch" | "join" | "step"): string {
+  const block = emitStateBody(name, state, role);
+  if (!state.timeout) return block;
+  // Inject ` timeoutMs: N` just before the closing `},`. Match an optional preceding comma so we don't
+  // duplicate it when the inner content already ends with one (multi-line templates do).
+  return block.replace(/,?\s*\}\s*,\s*$/, `${timeoutField(state)} },`);
+}
+
+function emitStateBody(name: string, state: SkeletonState, role?: "branch" | "join" | "step"): string {
   if (state.type === "final") {
     return `        ${name}: { type: 'final', status: '${state.status || "success"}' },`;
   }
@@ -145,13 +153,15 @@ function emitState(name: string, state: SkeletonState, role?: "branch" | "join" 
   if (state.type === "parallel") {
     const overBody = compileGuardExpr(state.overExpr || "[]");
     const conc = state.concurrency !== undefined ? `, concurrency: ${state.concurrency}` : "";
-    return `        ${name}: { type: 'parallel', over: (c) => (${overBody}), branch: '${state.parallelBranch}', join: '${state.parallelJoin}'${conc} },`;
+    const onPart = state.on && Object.keys(state.on).length ? `, on: ${emitTransitions(state.on)}` : "";
+    return `        ${name}: { type: 'parallel', over: (c) => (${overBody}), branch: '${state.parallelBranch}', join: '${state.parallelJoin}'${conc}${onPart} },`;
   }
   if (state.type === "loop") {
     const stepsJson = JSON.stringify(state.loopSteps || []);
     const maxPart = state.maxIterations !== undefined ? `, max: ${state.maxIterations}` : "";
     const exitPart = state.exitExpr ? `, exit: (c) => (${compileGuardExpr(state.exitExpr)})` : "";
-    return `        ${name}: { type: 'loop', steps: ${stepsJson}, join: '${state.parallelJoin}'${maxPart}${exitPart} },`;
+    const onPart = state.on && Object.keys(state.on).length ? `, on: ${emitTransitions(state.on)}` : "";
+    return `        ${name}: { type: 'loop', steps: ${stepsJson}, join: '${state.parallelJoin}'${maxPart}${exitPart}${onPart} },`;
   }
   if (state.type === "wait") {
     const parts: string[] = [`type: 'wait'`, `mode: ${JSON.stringify(state.waitMode)}`];
@@ -331,6 +341,10 @@ function stubFn(name: string, events: string[]): string {
 
 function sanitizeId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_]/g, "_");
+}
+
+function timeoutField(state: SkeletonState): string {
+  return state.timeout ? `, timeoutMs: ${parseDurationMs(state.timeout)}` : "";
 }
 
 function parseDurationMs(s: string): number {

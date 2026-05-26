@@ -39,6 +39,24 @@ You receive a natural-language description of a recurring AI task. Your job is t
 - **`parallel`** — fan out over an array. `<state type="parallel" over="config.x" branch="run_one" join="aggregate" concurrency="8" />`. Runs `branch` state once per item with `ctx.branchInput`/`ctx.branchIndex`/`ctx.branchDir`. After all settle, `ctx.data.branches = [{index, input, dir, ok, error?}]` and transitions to `join`. Branch state's own `on` is ignored. Per-branch errors are captured, not fatal. **Codegen auto-wires agents**: if a `branch` is an `agent`, its task automatically includes `branchInput`/`branchIndex`/`branchDir`, and if `branchInput.model` exists it becomes `opts.model` (per-branch LLM routing). If a `join` is an `agent`, its task automatically includes `data.branches`. Agent prompts (`.md`) should reference these directly (e.g. "Read your input from the branch input you were given. Write your output to your branch directory.").
 - **`loop`** — bounded iteration. `<state type="loop" max="5" exit="data.agreed" join="aggregate"><step state="actor"/><step state="critic"/></state>`. Per iteration runs each step in order. After iteration: increment iter, eval `exit` expression — truthy or `iter >= max` → transition to `join`. `ctx.data.iteration` exposes the current 0-based iteration to steps. Step state's own `on` is ignored. Needs at least one of `max` or `exit`. **Use for**: actor-critic debate, refinement loops, polling. **Codegen auto-wires agents**: step-role agents get task with `c.data.iteration` automatically.
 
+## Per-state timeout
+
+Any non-routing state (`agent`, `interactive`, `code`, `parallel`, `loop`, `call`, `approval`) accepts a `timeout` attribute. The runtime aborts the state via `AbortSignal` when the timeout fires; if `<on event="TIMEOUT" target=.../>` is declared, transitions there — otherwise the pipeline fails with a clear error.
+
+```xml
+<state name="long_review" type="agent" timeout="2m">
+  <on event="DONE"    target="aggregate" />
+  <on event="TIMEOUT" target="fallback" />
+</state>
+
+<state name="async_run" type="parallel" timeout="10m"
+       over="config.tasks" branch="run_one" join="done">
+  <on event="TIMEOUT" target="abort_handler" />
+</state>
+```
+
+Duration syntax: `100ms`, `30s`, `5m`, `1h`. Forbidden on `switch`, `set`, `final`, `wait` (the last has mode-specific `timeout` attribute already).
+
 ## Nested composition
 
 `parallel.branch` and `loop.steps` can themselves be `parallel` or `loop` states — they are not limited to `agent`/`code`. Allowed types:

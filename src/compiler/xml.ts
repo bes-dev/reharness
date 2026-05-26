@@ -33,6 +33,12 @@ export function parseSkeletonXML(xml: string): Skeleton {
 }
 
 function parseState(name: string, raw: any): SkeletonState {
+  const st = parseStateBody(name, raw);
+  if (raw["@_timeout"]) st.timeout = raw["@_timeout"];
+  return st;
+}
+
+function parseStateBody(name: string, raw: any): SkeletonState {
   const type = raw["@_type"];
 
   if (type === "wait") {
@@ -95,6 +101,15 @@ function parseState(name: string, raw: any): SkeletonState {
       if (!Number.isFinite(n)) throw new Error(`Parallel state '${name}' concurrency must be a number`);
       st.concurrency = n;
     }
+    if (raw.on) {
+      st.on = {};
+      for (const on of raw.on) {
+        const event = on["@_event"];
+        if (event !== "TIMEOUT") throw new Error(`Parallel state '${name}': only TIMEOUT event allowed in <on>`);
+        if (on["@_target"]) st.on[event] = on["@_target"];
+        else throw new Error(`<on event="${event}"> in state '${name}' has no target`);
+      }
+    }
     return st;
   }
 
@@ -115,6 +130,15 @@ function parseState(name: string, raw: any): SkeletonState {
       st.maxIterations = n;
     }
     if (raw["@_exit"]) st.exitExpr = raw["@_exit"];
+    if (raw.on) {
+      st.on = {};
+      for (const on of raw.on) {
+        const event = on["@_event"];
+        if (event !== "TIMEOUT") throw new Error(`Loop state '${name}': only TIMEOUT event allowed in <on>`);
+        if (on["@_target"]) st.on[event] = on["@_target"];
+        else throw new Error(`<on event="${event}"> in state '${name}' has no target`);
+      }
+    }
     return st;
   }
 
@@ -219,6 +243,7 @@ export function serializeSkeletonXML(skeleton: Skeleton): string {
     }
 
     const stateAttrs = [`name="${esc(name)}"`, `type="${state.type}"`];
+    if (state.timeout) stateAttrs.push(`timeout="${esc(state.timeout)}"`);
     if (state.type === "approval" && state.autoEvent) stateAttrs.push(`auto-event="${esc(state.autoEvent)}"`);
     if (state.type === "wait") {
       if (state.waitMode) stateAttrs.push(`mode="${state.waitMode}"`);
@@ -262,7 +287,15 @@ export function serializeSkeletonXML(skeleton: Skeleton): string {
       if (state.parallelBranch) stateAttrs.push(`branch="${esc(state.parallelBranch)}"`);
       if (state.parallelJoin) stateAttrs.push(`join="${esc(state.parallelJoin)}"`);
       if (state.concurrency !== undefined) stateAttrs.push(`concurrency="${state.concurrency}"`);
-      lines.push(`  <state ${stateAttrs.join(" ")} />`);
+      if (state.on && Object.keys(state.on).length) {
+        lines.push(`  <state ${stateAttrs.join(" ")}>`);
+        for (const [event, target] of Object.entries(state.on)) {
+          if (typeof target === "string") lines.push(`    <on event="${esc(event)}" target="${esc(target)}" />`);
+        }
+        lines.push(`  </state>`);
+      } else {
+        lines.push(`  <state ${stateAttrs.join(" ")} />`);
+      }
       continue;
     }
     if (state.type === "loop") {
@@ -271,6 +304,9 @@ export function serializeSkeletonXML(skeleton: Skeleton): string {
       if (state.exitExpr) stateAttrs.push(`exit="${esc(state.exitExpr)}"`);
       lines.push(`  <state ${stateAttrs.join(" ")}>`);
       for (const s of state.loopSteps || []) lines.push(`    <step state="${esc(s)}" />`);
+      for (const [event, target] of Object.entries(state.on || {})) {
+        if (typeof target === "string") lines.push(`    <on event="${esc(event)}" target="${esc(target)}" />`);
+      }
       lines.push(`  </state>`);
       continue;
     }

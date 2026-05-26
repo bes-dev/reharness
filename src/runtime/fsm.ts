@@ -186,21 +186,23 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
     const snapshot = (cur: string): SavedState => ({ runId, current: cur, data, retries });
     const fail = (msg: string): "error" => { emit(msg); save(runDir, snapshot(current)); return "error"; };
 
-    // ── ctx services (read c.runDir per-call so branches/iterations get isolated logs) ──
+    // ── ctx services (read c.runDir / c.signal per-call so branches/iterations get isolated runtime context) ──
     async function callAgent(c: StateContext<C>, name: string, task: string, o?: any): Promise<void> {
-      if (signal?.aborted) throw new Error("Aborted");
+      const sig = c.signal || signal;
+      if (sig?.aborted) throw new Error("Aborted");
       const logFile = resolve(c.runDir, `${String(++stepCounter).padStart(2, "0")}-${name}.md`);
       const promptFile = resolve(agentsDir, `${name}.md`);
       if (!existsSync(promptFile)) throw new Error(`Agent prompt not found: ${promptFile}`);
       await runAgent({
         prompt: promptFile, task, cwd, onLine: emit, onStatus,
-        logFile, piBinary, piModel: o?.model || piModel, signal,
+        logFile, piBinary, piModel: o?.model || piModel, signal: sig,
       });
       emit(`✓ ${name}`);
     }
 
     async function callInteractive(c: StateContext<C>, name: string, task: string, o?: any): Promise<void> {
-      if (signal?.aborted) throw new Error("Aborted");
+      const sig = c.signal || signal;
+      if (sig?.aborted) throw new Error("Aborted");
       const promptFile = resolve(agentsDir, `${name}.md`);
       if (!existsSync(promptFile)) throw new Error(`Agent prompt not found: ${promptFile}`);
 
@@ -212,7 +214,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
 
       emit(`▷ ${name} (interactive — exit Pi to continue)`);
       await runInteractive({
-        prompt: promptFile, task, cwd, piBinary, piModel: o?.model || piModel, signal,
+        prompt: promptFile, task, cwd, piBinary, piModel: o?.model || piModel, signal: sig,
       });
 
       for (let i = 0; i < absArtifacts.length; i++) {
@@ -224,8 +226,9 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
       emit(`✓ ${name}`);
     }
 
-    function doShell(_c: StateContext<C>, cmd: string, label?: string): boolean {
-      if (signal?.aborted) return false;
+    function doShell(c: StateContext<C>, cmd: string, label?: string): boolean {
+      const sig = c.signal || signal;
+      if (sig?.aborted) return false;
       const lbl = label || cmd.slice(0, 30);
       try {
         execSync(cmd, { cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 120_000 });
@@ -242,6 +245,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
       const c: StateContext<C> = {
         config: def.config,
         emit, status: onStatus, data, runId, runDir,
+        signal,
         retry: (k) => (retries[k] = (retries[k] || 0) + 1),
         retries: (k) => retries[k] || 0,
         agent: async (n, t, o) => callAgent(c, n, t, o),
@@ -253,6 +257,32 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
     }
 
     const ctx = mkCtx();
+
+    /** Run `work` with a per-state timeout. Returns {timedOut: true} if the timer fires before completion. */
+    async function withStateTimeout<T>(
+      timeoutMs: number | undefined,
+      work: (sig: AbortSignal | undefined) => Promise<T>,
+    ): Promise<{ ok: T; timedOut: false } | { timedOut: true }> {
+      if (!timeoutMs) return { ok: await work(signal), timedOut: false };
+
+      const ctrl = new AbortController();
+      const onParentAbort = () => ctrl.abort();
+      if (signal?.aborted) ctrl.abort();
+      else signal?.addEventListener("abort", onParentAbort, { once: true });
+
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs);
+      try {
+        const ok = await work(ctrl.signal);
+        return { ok, timedOut: false };
+      } catch (err: any) {
+        if (timedOut) return { timedOut: true };
+        throw err;
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onParentAbort);
+      }
+    }
 
     // ── Nested-aware helpers (called from outer FSM loop and from executeStateOnce) ──
 
@@ -485,11 +515,20 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
       }
 
       if (isApproval(state)) {
-        let event: string;
-        try { event = await runApproval(state, current, ctx); }
-        catch (err: any) { return fail(`✗ ${err.message}`); }
-        const next = resolveTarget(state.on[event], ctx);
-        if (!next) return fail(`✗ approval "${current}" → "${event}": no resolvable target`);
+        const r = await withStateTimeout(state.timeoutMs, async (sig) =>
+          runApproval(state, current, mkCtx({ signal: sig })),
+        );
+        if (r.timedOut) {
+          const tgt = state.on["TIMEOUT"];
+          if (!tgt) return fail(`✗ approval "${current}" timed out (no TIMEOUT transition)`);
+          const next = resolveTarget(tgt, ctx);
+          if (!next) return fail(`✗ approval "${current}" TIMEOUT: no resolvable target`);
+          emit(`⚠ approval ${current} timed out → ${next}`);
+          current = next;
+          continue;
+        }
+        const next = resolveTarget(state.on[r.ok], ctx);
+        if (!next) return fail(`✗ approval "${current}" → "${r.ok}": no resolvable target`);
         current = next;
         continue;
       }
@@ -502,29 +541,38 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
       }
 
       if (isParallel(state)) {
-        try {
-          const results = await runParallel(state, current, ctx);
-          data.branches = results;
-          const okCount = results.filter(r => r.ok).length;
-          emit(`✓ parallel ${current}: ${okCount}/${results.length} ok`);
-          if (signal?.aborted) return fail("⚠ Aborted by user");
-          current = state.join;
-        } catch (err: any) {
-          if (signal?.aborted) return fail("⚠ Aborted by user");
-          return fail(`✗ parallel ${current}: ${err.message}`);
+        const r = await withStateTimeout(state.timeoutMs, async (sig) =>
+          runParallel(state, current, mkCtx({ signal: sig })),
+        ).catch((err) => { throw err; });
+        if (r.timedOut) {
+          if (!state.on?.["TIMEOUT"]) return fail(`✗ parallel "${current}" timed out (no TIMEOUT transition)`);
+          const next = resolveTarget(state.on["TIMEOUT"], ctx);
+          if (!next) return fail(`✗ parallel "${current}" TIMEOUT: no target`);
+          emit(`⚠ parallel ${current} timed out → ${next}`);
+          current = next; continue;
         }
+        data.branches = r.ok;
+        const okCount = r.ok.filter(b => b.ok).length;
+        emit(`✓ parallel ${current}: ${okCount}/${r.ok.length} ok`);
+        if (signal?.aborted) return fail("⚠ Aborted by user");
+        current = state.join;
         continue;
       }
 
       if (isLoop(state)) {
-        try {
-          data.iterations = await runLoop(state, current, ctx);
-          if (signal?.aborted) return fail("⚠ Aborted by user");
-          current = state.join;
-        } catch (err: any) {
-          if (signal?.aborted) return fail("⚠ Aborted by user");
-          return fail(`✗ loop ${current}: ${err.message}`);
+        const r = await withStateTimeout(state.timeoutMs, async (sig) =>
+          runLoop(state, current, mkCtx({ signal: sig })),
+        ).catch((err) => { throw err; });
+        if (r.timedOut) {
+          if (!state.on?.["TIMEOUT"]) return fail(`✗ loop "${current}" timed out (no TIMEOUT transition)`);
+          const next = resolveTarget(state.on["TIMEOUT"], ctx);
+          if (!next) return fail(`✗ loop "${current}" TIMEOUT: no target`);
+          emit(`⚠ loop ${current} timed out → ${next}`);
+          current = next; continue;
         }
+        data.iterations = r.ok;
+        if (signal?.aborted) return fail("⚠ Aborted by user");
+        current = state.join;
         continue;
       }
 
@@ -557,17 +605,21 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
         catch (err: any) { return fail(`✗ call "${current}": ${err.message}`); }
 
         const subEmit = (msg: string) => emit(`  [${state.skeleton}] ${msg}`);
-        let subStatus: "success" | "error";
-        try {
-          subStatus = await subPipeline.run(subEmit, {
-            signal, onStatus, piModel,
-            autoApprove: opts.autoApprove,
-            approvalHandler: opts.approvalHandler,
-          });
-        } catch (err: any) {
-          if (signal?.aborted) return fail("⚠ Aborted by user");
-          return fail(`✗ call "${current}" crashed: ${err.message}`);
+
+        const r = await withStateTimeout(state.timeoutMs, async (sig) => subPipeline.run(subEmit, {
+          signal: sig, onStatus, piModel,
+          autoApprove: opts.autoApprove,
+          approvalHandler: opts.approvalHandler,
+        }));
+        if (r.timedOut) {
+          const tgt = state.on["TIMEOUT"];
+          if (!tgt) return fail(`✗ call "${current}" timed out (no TIMEOUT transition)`);
+          const next = resolveTarget(tgt, ctx);
+          if (!next) return fail(`✗ call "${current}" TIMEOUT: no target`);
+          emit(`⚠ call ${current} timed out → ${next}`);
+          current = next; continue;
         }
+        const subStatus = r.ok;
         emit(`${subStatus === "success" ? "✓" : "✗"} call ${current}: ${subStatus}`);
 
         const target = state.on[subStatus];
@@ -580,15 +632,28 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
 
       // Active
       const active = state as ActiveState<C>;
+      const transitions: Record<string, TransitionTarget<C>> = typeof active.on === "string"
+        ? { DONE: active.on } : active.on;
+
       let event: string;
-      try { event = (await active.entry(ctx)) || "DONE"; }
-      catch (err: any) {
+      try {
+        const r = await withStateTimeout(active.timeoutMs, async (sig) =>
+          (await active.entry(mkCtx({ signal: sig }))) || "DONE",
+        );
+        if (r.timedOut) {
+          const tgt = transitions["TIMEOUT"];
+          if (!tgt) return fail(`✗ ${current} timed out (no TIMEOUT transition)`);
+          const next = resolveTarget(tgt, ctx);
+          if (!next) return fail(`✗ ${current} TIMEOUT: no target`);
+          emit(`⚠ ${current} timed out → ${next}`);
+          current = next;
+          continue;
+        }
+        event = r.ok;
+      } catch (err: any) {
         if (signal?.aborted) return fail("⚠ Aborted by user");
         return fail(`✗ ${current} failed: ${err.message}`);
       }
-
-      const transitions: Record<string, TransitionTarget<C>> = typeof active.on === "string"
-        ? { DONE: active.on } : active.on;
 
       const target = transitions[event];
       if (!target) return fail(`✗ State "${current}" has no transition for event "${event}"`);

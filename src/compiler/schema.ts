@@ -66,6 +66,8 @@ export interface SkeletonState {
   waitPort?: number;
   /** Wait file: poll interval (default "1s"). */
   waitPollInterval?: string;
+  /** Universal: abort state execution after this duration. Triggers `TIMEOUT` event (or fail if no transition). */
+  timeout?: string;
 }
 
 export interface Skeleton {
@@ -87,8 +89,19 @@ export function validateSkeleton(sk: Skeleton): string[] {
   if (!sk.initial) errors.push("Missing 'initial'");
   if (sk.initial && !names.has(sk.initial)) errors.push(`Initial state '${sk.initial}' does not exist`);
 
+  const TIMEOUT_FORBIDDEN = new Set<SkeletonState["type"]>(["switch", "set", "final", "wait"]);
+
   let hasFinal = false;
   for (const [name, state] of Object.entries(sk.states)) {
+    if (state.timeout) {
+      if (!/^\d+\s*(ms|s|m|h)$/.test(state.timeout)) {
+        errors.push(`State '${name}' timeout '${state.timeout}' invalid (expected e.g. "30s", "5m")`);
+      }
+      if (TIMEOUT_FORBIDDEN.has(state.type)) {
+        errors.push(`State '${name}' type=${state.type} cannot have timeout`);
+      }
+    }
+
     if (state.type === "final") {
       hasFinal = true;
       if (!state.status) errors.push(`Final state '${name}' missing 'status'`);
