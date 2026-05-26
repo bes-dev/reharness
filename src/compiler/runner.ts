@@ -1,0 +1,70 @@
+import { createInterface } from "readline";
+import { buildGeneratePipeline } from "./generate.js";
+import type { ApprovalHandler } from "../runtime/types.js";
+
+const ansi = {
+  dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
+  bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
+  green: (s: string) => `\x1b[32m${s}\x1b[0m`,
+  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
+  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
+  cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
+};
+
+export interface RunGenerateOptions {
+  cwd: string;
+  input: string;
+  autoApprove?: boolean;
+  piModel?: string;
+}
+
+export async function runGenerate(opts: RunGenerateOptions): Promise<number> {
+  if (!opts.input.trim()) { console.error("Usage: reharness generate <description>"); return 1; }
+  process.on("SIGINT", () => { process.stdout.write("\r\x1b[K"); process.exit(130); });
+
+  const pipeline = buildGeneratePipeline(opts);
+  try {
+    const status = await pipeline.run(emit, {
+      autoApprove: opts.autoApprove,
+      approvalHandler: terminalApprovalHandler,
+      piModel: opts.piModel,
+    });
+    process.stdout.write("\r\x1b[K");
+    console.log(status === "success" ? ansi.green("✓ generate complete") : ansi.red(`✗ ${status}`));
+    return status === "success" ? 0 : 1;
+  } catch (err: any) {
+    process.stdout.write("\r\x1b[K");
+    console.log(`${ansi.red("✗ crashed:")} ${err.message}`);
+    return 1;
+  }
+}
+
+function emit(msg: string) {
+  const m = msg.match(/^── (\S+) ──$/);
+  if (m) { process.stdout.write(`\r\x1b[K${ansi.cyan("⠋")} ${ansi.bold(m[1])}\n`); return; }
+  if (!msg.trim()) return;
+  const c = msg[0] === "✓" ? ansi.green : msg[0] === "✗" ? ansi.red : msg[0] === "⚠" ? ansi.yellow : (s: string) => s;
+  console.log(`  ${c(msg)}`);
+}
+
+const terminalApprovalHandler: ApprovalHandler = async (cp) => {
+  const { dim, bold, cyan, red } = ansi;
+  const sep = dim("─".repeat(60));
+  console.log(`\n${sep}\n${bold(cyan("◆ APPROVAL"))} ${dim(`(${cp.state}, round ${cp.round})`)}\n\n${cp.prompt}\n`);
+  for (const a of cp.artifacts) {
+    console.log(dim(`── ${a.path} ──`));
+    console.log(a.content.length > 4000 ? a.content.slice(0, 4000) + dim("\n[…truncated]") : a.content);
+    console.log("");
+  }
+  console.log(`Events: ${cp.events.map(e => e === cp.autoEvent ? bold(e) : e).join(" | ")}\n${sep}`);
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q: string) => new Promise<string>((res) => rl.question(q, res));
+  try {
+    while (true) {
+      const ev = ((await ask(`Event [${cp.autoEvent || cp.events[0]}]: `)).trim()) || cp.autoEvent || cp.events[0];
+      if (!cp.events.includes(ev)) { console.log(red(`Unknown event "${ev}". Allowed: ${cp.events.join(", ")}`)); continue; }
+      return { event: ev };
+    }
+  } finally { rl.close(); }
+};

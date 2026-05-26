@@ -1,0 +1,46 @@
+<skeleton id="generate" initial="analyze" format-version="0.1">
+  <description>Compile a workflow from a natural-language description (self-hosted).</description>
+  <usage>&lt;description...&gt;</usage>
+
+  <state name="analyze" type="agent">
+    <on event="DONE" target="review_design" />
+  </state>
+
+  <state name="review_design" type="approval" auto-event="APPROVED">
+    <prompt>Review the proposed scope and draft skeleton. Approve to proceed, or revise to enter an interactive refinement session.</prompt>
+    <artifacts>
+      <show path=".reharness/generate/scope.md" />
+      <show path=".reharness/generate/draft-skeleton.xml" />
+    </artifacts>
+    <on event="APPROVED" target="construct" />
+    <on event="REVISED" target="discuss" />
+  </state>
+
+  <state name="discuss" type="interactive">
+    <artifacts>
+      <edit path=".reharness/generate/scope.md" />
+      <edit path=".reharness/generate/draft-skeleton.xml" />
+    </artifacts>
+    <on event="DONE" target="review_design" />
+  </state>
+
+  <state name="construct" type="code">
+    <on event="DONE" target="fill_prompts" />
+    <on event="ERROR" target="error" />
+  </state>
+
+  <state name="fill_prompts" type="agent">
+    <on event="DONE" target="verify" />
+  </state>
+
+  <state name="verify" type="code">
+    <on event="PASS" target="done" />
+    <on event="FAIL">
+      <go target="fill_prompts" retries-key="verify" retries-max="2" />
+      <go target="error" />
+    </on>
+  </state>
+
+  <state name="done" type="final" status="success" />
+  <state name="error" type="final" status="error" />
+</skeleton>

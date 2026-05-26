@@ -1,26 +1,38 @@
 # reharness
 
-Deterministic multi-agent FSM framework. Define finite state machines — states, transitions, guards, events. Each state runs an LLM agent or deterministic code. Built-in meta-FSM generates and evolves FSMs from natural language prompts.
+Conversational compiler for AI workflows. Compile a recurring AI task — described in natural language — into a deterministic FSM with explicit human (or agent) checkpoints. The compiled artifact is a persistent, version-controllable directory of XML + TypeScript that any conformant runtime can execute cheaply on small models.
 
 ## Quick Start
 
 ```bash
-# Generate an FSM for any domain
-reharness generate ./my-fsm "FSM for generating React Native apps from a one-line idea"
-
-# Or generate a command for an existing project
-cd my-project
+# Interactive: design + checkpoint + construct
 reharness generate "Code review FSM for this project"
 
-# Run your FSMs
-reharness              # Interactive TUI
-reharness build myapp  # Direct command
+# Agent-driven: skip checkpoint, resolve via auto-event
+reharness generate --auto-approve "FSM for generating React Native apps from a one-line idea"
 
-# Improve FSMs from run history
-reharness evolve
+# Run a compiled FSM
+reharness                  # Interactive TUI
+reharness <command> args   # Direct
 ```
 
-## Writing Pipelines
+## How `generate` works
+
+```
+analyze (agent)   — writes scope.md + draft-skeleton.xml
+review_design     — APPROVAL CHECKPOINT
+                    Approve  → construct
+                    Revise   → analyze (with accumulated feedback)
+construct (code)  — validate, copy to skeletons/, codegen
+fill_prompts      — agent fills agent prompts + code-state implementations
+verify (code)     — TS compile + structural checks
+                    PASS → done
+                    FAIL → fill_prompts (≤2 retries) → error
+```
+
+One checkpoint, agent-friendly. `--auto-approve` resolves it via the state's `auto-event` and emits a warning — same workflow serves humans and agents.
+
+## Writing a pipeline by hand
 
 ```typescript
 // .reharness/commands/build.ts
@@ -36,9 +48,7 @@ export default defineCommand({
       plan:   { entry: async (c) => { await c.agent('planner', 'Plan'); },  on: 'code' },
       code:   { entry: async (c) => { await c.agent('coder', 'Build'); },   on: 'verify' },
       verify: {
-        entry: async (c) => {
-          return c.shell('npx tsc --noEmit') ? 'PASS' : 'FAIL';
-        },
+        entry: async (c) => c.shell('npx tsc --noEmit') ? 'PASS' : 'FAIL',
         on: {
           PASS: 'done',
           FAIL: [
@@ -55,126 +65,45 @@ export default defineCommand({
 });
 ```
 
-## Project Structure
+## State types
+
+| Type       | Behavior |
+|------------|----------|
+| `agent`    | LLM agent runs under the state's harness (prompt + tools + contract). |
+| `code`     | Deterministic TypeScript function. Returns an event string. |
+| `approval` | Runtime pauses, shows artifacts, awaits a chosen event. `auto-event` resolves it in auto-approve mode. |
+| `final`    | Terminal: `status: success | error`. |
+
+## CLI
+
+```bash
+reharness                                  # Interactive TUI
+reharness <command> [args...]              # Direct run
+reharness generate <description>           # Compile a new workflow (interactive checkpoint)
+reharness generate --auto-approve <desc>   # Compile autonomously (for agent invocation)
+reharness --model anthropic/claude-sonnet-4-6 ...
+reharness <command> --resume               # Resume an interrupted run
+```
+
+## Project structure
 
 ```
 my-project/
 ├── .reharness/
-│   ├── agents/          # Agent prompt files (.md)
-│   ├── commands/        # One file per slash command (auto-discovered)
-│   └── lib/             # Shared code
-└── ...
+│   ├── skeletons/   # Source of truth — one .xml per command
+│   ├── commands/    # Generated from skeletons — do not edit
+│   ├── agents/      # Agent prompts (edit freely)
+│   ├── lib/         # Code-state implementations (edit freely)
+│   ├── generate/    # Compiler artifacts (scope.md, draft-skeleton.xml, verify-errors.md)
+│   ├── feedback/    # Per-round REVISED feedback, accumulated
+│   └── logs/        # Run logs
 ```
 
-## State Context (`ctx`)
+## Imports
 
-```typescript
-await ctx.agent('name', 'task');                    // Run LLM agent (output = files on disk)
-await ctx.agent('name', 'task', { model: '...' });  // Override model per agent
-await ctx.interactive('name', 'task');               // Interactive session in tmux pane
-ctx.shell('cmd', 'label');                           // Shell command, returns boolean
-ctx.emit('message');                                 // Log to TUI
-ctx.status('text');                                  // Update TUI status bar
-ctx.retry('key');                                    // Increment retry counter
-ctx.retries('key');                                  // Read retry count
-ctx.config                                           // Config (read-only)
-ctx.data                                             // Shared state (persisted for resume)
-```
-
-## Built-in Commands
-
-### `generate [dir] <description>`
-Generate a FSM from a natural language prompt. Two modes:
-- **Standalone**: `reharness generate ./output "FSM for..."` — creates new FSM in a directory
-- **In-project**: `reharness generate "Review command for this project"` — explores codebase, generates command in current `.reharness/`
-
-### `evolve [--auto] [--interactive]`
-Analyze run logs and improve the FSM. Patches agent prompts, verify checks, scaffold, even the state graph.
-- `--auto`: enable auto-evolution after every run
-- `--interactive`: review and approve changes in tmux session with agent
-
-Changes are git-versioned for easy rollback.
-
-## CLI Options
-
-```bash
-reharness                          # Interactive TUI
-reharness <command> [args...]      # Direct command
-reharness --model <id>             # Override LLM model (e.g. anthropic/claude-sonnet-4-6)
-reharness <command> --resume       # Resume interrupted FSM
-```
-
-## Architecture
-
-```
-src/
-├── core/              # FSM engine (standalone, no LLM dependency)
-│   ├── fsm.ts         # definePipeline, validation, run loop
-│   ├── agent.ts       # LLM subprocess runner (Pi-compatible)
-│   ├── tmux.ts        # Tmux pane integration
-│   ├── tui-app.ts     # Interactive + direct TUI
-│   └── project.ts     # Auto-discover .reharness/commands/
-│
-├── meta/              # FSM generators (optional module)
-│   ├── commands/      # /generate, /evolve
-│   ├── agents/        # Meta-FSM agent prompts
-│   └── references/    # Design guide for FSM generation
-│
-└── cli.ts             # Entry point (loads core + meta)
-```
-
-Import paths:
-- `reharness` — full package (core + meta)
-- `reharness/core` — FSM engine only
-- `reharness/meta` — generators only
-
-## Integrations
-
-Reharness works standalone via CLI, but also integrates into coding agents as a tool — letting them offload structured multi-step tasks into deterministic FSMs.
-
-### MCP Server
-
-Works with Claude Code, Cursor, and any MCP-compatible client.
-
-```json
-// .mcp.json
-{
-  "mcpServers": {
-    "reharness": {
-      "command": "reharness-mcp"
-    }
-  }
-}
-```
-
-Exposes 5 tools: `reharness_generate`, `reharness_evolve`, `reharness_run`, `reharness_list`, `reharness_status`.
-
-### Claude Code Skills
-
-Copy skills to your project or globally:
-
-```bash
-cp -r integrations/claude-code/skills/* .claude/skills/
-```
-
-Three skills:
-- `/reharness-generate` — generate FSMs from natural language
-- `/reharness-evolve` — improve FSMs from run history
-- `/reharness` — auto-invoked by Claude when task is structured (FSM accelerator)
-
-### Pi Coding Agent
-
-Add reharness awareness to Pi's system prompt:
-
-```bash
-cat integrations/pi/reharness-tool.md >> ~/.pi/agent/system-prompt.md
-```
-
-Pi can then invoke `reharness generate/evolve/run` via bash tool when it recognizes a structured task.
-
-## LLM Reference
-
-See [AGENTS.md](AGENTS.md) — documentation for LLMs creating commands, FSMs, and agent prompts.
+- `reharness` — full public API
+- `reharness/runtime` — FSM runtime only (definePipeline, types, agent runner)
+- `reharness/compiler` — compilation primitives only (parse/serialize XML, codegen, verify)
 
 ## License
 
