@@ -47,12 +47,20 @@ export function generateFromSkeleton(sk: Skeleton, reharnessDir: string): void {
   if (!existsSync(libPath)) {
     writeFileSync(libPath, emitLib(sk, codeStates));
   } else {
-    const existing = readFileSync(libPath, "utf-8");
-    const stubs = codeStates
+    let existing = readFileSync(libPath, "utf-8");
+    // (1) Update return-type annotation of existing entry functions whose declared events changed.
+    for (const n of codeStates) {
+      if (!existing.includes(`function ${n}Entry`)) continue;
+      const events = Object.keys(sk.states[n].on || {});
+      existing = updateSignature(existing, n, events);
+    }
+    // (2) Append stubs for new code states that don't have an entry function yet.
+    const newStubs = codeStates
       .filter(n => !existing.includes(`function ${n}Entry`))
       .map(n => stubFn(n, Object.keys(sk.states[n].on || {})))
       .join("\n");
-    if (stubs) appendFileSync(libPath, "\n" + stubs);
+    const updated = newStubs ? existing + "\n" + newStubs : existing;
+    writeFileSync(libPath, updated);
   }
 
   for (const name of agentStates) {
@@ -359,13 +367,29 @@ function retryKeysOf(on: Record<string, string | GuardedTransition[]>): Array<{ 
   return out;
 }
 
+function returnUnion(events: string[]): string {
+  return events.length ? events.map(e => `'${e}'`).join(" | ") : "'DONE'";
+}
+
 function stubFn(name: string, events: string[]): string {
-  return `export function ${name}Entry(c: any): string {
+  const union = returnUnion(events);
+  return `export function ${name}Entry(c: any): ${union} {
   // TODO: implement ${name}
-  // Returns: ${events.map(e => `'${e}'`).join(", ") || "'DONE'"}
+  // Returns only events declared by the skeleton's <on>: ${union}.
+  // Do not invent additional return values — let exceptions throw (codegen wraps them as ERROR).
   return '${events[0] || "DONE"}';
 }
 `;
+}
+
+/** Rewrite the return type annotation of `function <name>Entry(...): TYPE` to the new union. Preserves body. */
+function updateSignature(source: string, name: string, events: string[]): string {
+  const union = returnUnion(events);
+  const re = new RegExp(
+    `(export function ${name}Entry\\s*\\([^)]*\\)\\s*:\\s*)[^{\\n]+?(\\s*\\{)`,
+    "m",
+  );
+  return source.replace(re, `$1${union}$2`);
 }
 
 function sanitizeId(id: string): string {
