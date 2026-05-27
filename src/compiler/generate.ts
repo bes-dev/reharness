@@ -78,25 +78,52 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
 
       construct: {
         entry: async (c) => {
-          if (!existsSync(draftPath)) { c.emit("✗ draft-skeleton.xml missing"); return "ERROR"; }
+          if (!existsSync(draftPath)) { c.emit("✗ draft-skeleton.xml missing"); c.retry("construct"); return "ERROR"; }
           try {
             const sk = parseSkeletonXML(readFileSync(draftPath, "utf-8"));
             const errs = validateSkeleton(sk);
             if (errs.length) {
               writeFileSync(resolve(genDir, "skeleton-errors.md"), errs.join("\n"));
               c.emit(`✗ skeleton invalid:\n${errs.map(e => "  - " + e).join("\n")}`);
+              c.retry("construct");
               return "ERROR";
             }
-            if (RESERVED_IDS.has(sk.id)) { c.emit(`✗ skeleton id '${sk.id}' is reserved`); return "ERROR"; }
+            if (RESERVED_IDS.has(sk.id)) {
+              writeFileSync(resolve(genDir, "skeleton-errors.md"), `skeleton id '${sk.id}' is reserved (pick a different id; 'generate' and 'evolve' are reserved by reharness)`);
+              c.emit(`✗ skeleton id '${sk.id}' is reserved`);
+              c.retry("construct");
+              return "ERROR";
+            }
             const skeletonsDir = resolve(reharnessDir, "skeletons");
             mkdirSync(skeletonsDir, { recursive: true });
             copyFileSync(draftPath, resolve(skeletonsDir, `${sk.id}.xml`));
             generateAllFromSkeletons(reharnessDir);
             c.emit(`✓ skeleton ${sk.id} compiled`);
             return "DONE";
-          } catch (err: any) { c.emit(`✗ construct: ${err.message}`); return "ERROR"; }
+          } catch (err: any) {
+            writeFileSync(resolve(genDir, "skeleton-errors.md"), `XML parse / codegen error: ${err.message}`);
+            c.emit(`✗ construct: ${err.message}`);
+            c.retry("construct");
+            return "ERROR";
+          }
         },
-        on: { DONE: "fill_prompts", ERROR: "error" },
+        on: {
+          DONE: "fill_prompts",
+          ERROR: [
+            { target: "patch_skeleton", guard: (c) => c.retries("construct") < 3 },
+            { target: "error" },
+          ],
+        },
+      },
+
+      patch_skeleton: {
+        entry: async (c) => {
+          await c.agent("patch_skeleton",
+            `The construct step rejected the draft skeleton. Read .reharness/generate/skeleton-errors.md, .reharness/generate/draft-skeleton.xml, and .reharness/generate/scope.md. ` +
+            `Patch ${DRAFT} to fix every listed error. Edit ONLY draft-skeleton.xml. ` +
+            `After your edit the pipeline will re-run construct.`);
+        },
+        on: "construct",
       },
 
       fill_prompts: {

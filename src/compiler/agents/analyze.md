@@ -143,6 +143,21 @@ For every config field / data flow / per-state option you mention as supported, 
 
 If you cannot point to one of these three mechanisms, **the claim is unrealizable — either remove it from scope or change the skeleton design to support it**.
 
+## Skeleton validation — checklist before you finish
+
+Before writing `draft-skeleton.xml`, walk through every state you created and verify:
+
+1. **Every non-final state has at least one `<on event="..." target="..."/>` transition.** If a state has no outgoing edge it will be rejected by construct. (Most common analyze mistake.)
+2. **Every `target=` references a state that actually exists in the same skeleton.** Typos here cause "State X event Y → Z does not exist" errors.
+3. **Initial state exists.** The `<skeleton initial="X">` attribute must name an existing state.
+4. **At least one final state** (`<state type="final" status="success"/>` and usually one with `status="error"`).
+5. **Approval states have `<prompt>` child.**
+6. **Parallel `branch=` and Loop `step state=` reference states of allowed types** (agent/code/set + parallel/loop nested; loop also allows approval). NOT switch/check/final/interactive.
+7. **All retry loops bounded** with `retries-key/retries-max`.
+8. **`id` is kebab-case, not `generate` or `evolve` (reserved).**
+
+Run this checklist mentally before output. construct will reject malformed skeletons and you'll burn an extra retry cycle through `patch_skeleton` agent.
+
 ## Rules
 
 - Skeleton `id` must be kebab-case, not `generate` or `evolve` (reserved).
