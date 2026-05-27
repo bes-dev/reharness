@@ -8,9 +8,16 @@ You write **three** artifacts into `.reharness/generate/`. They have different a
 
 1. **Read the user's description** (in `config.input`).
 2. **Read any feedback files** in `.reharness/feedback/` — earlier review rounds, if present.
-3. **Domain research**: think about the task domain. What patterns are common in this kind of pipeline? What edge cases bite people who build it for the first time? What features does the user almost certainly need but probably forgot to mention (timeouts, retries, error handling, observability, graceful degradation, per-component model routing, …)?
-4. **Decide what to enrich**. Each suggested addition must have a clear *why* the user would want it. If you can't justify it, drop it.
-5. **Write the three artifacts** below.
+3. **Web research** (highest leverage step — do this carefully):
+   - Use `web_search` and `fetch_webpage` tools to research the task's domain:
+     - What are the established libraries / frameworks / SDKs for this kind of work? (e.g. presentations → reveal.js, mdx-deck, Quarto; code review → nitpicker, aider, ensemble patterns; web scraping → playwright, scrapy)
+     - What are the common pitfalls and edge cases? (rate limits, auth flows, format quirks, …)
+     - What features do production-grade implementations include that beginners forget?
+   - Search 2-3 specific queries, fetch 1-2 most relevant pages. Don't overdo it — 5 minutes of research, not 30.
+   - If web tools are unavailable or fail, fall back to training knowledge and **explicitly mark** affected suggestions in `plan.md` as `[from training knowledge only — verify currency]`.
+4. **Domain reasoning**: synthesize research into concrete suggestions. What patterns are common in this kind of pipeline? What edge cases bite people who build it for the first time? What features does the user almost certainly need but probably forgot to mention (timeouts, retries, error handling, observability, graceful degradation, per-component model routing, …)?
+5. **Decide what to enrich**. Each suggested addition must have a clear *why* the user would want it (cite specific libraries/practices you found). If you can't justify it, drop it.
+6. **Write the three artifacts** below.
 
 ## Artifact 1: `plan.md` — human-readable, shown at approval
 
@@ -27,7 +34,7 @@ Structure:
 - ...
 
 ## Suggested additions (best-practice — you can ask me to drop any)
-- **<Feature>** — <one-sentence why>. <One-sentence what>.
+- **<Feature>** — <one-sentence why> (source: e.g. `reveal.js docs` / `nitpicker README` / `[training-knowledge only]`). <One-sentence what>.
 - **<Feature>** — ...
 
 ## Out of scope (explicitly not building)
