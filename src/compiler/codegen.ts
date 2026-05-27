@@ -1,8 +1,13 @@
-import { writeFileSync, readFileSync, appendFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from "fs";
+import { writeFileSync, readFileSync, appendFileSync, mkdirSync, existsSync, readdirSync, unlinkSync, symlinkSync, lstatSync } from "fs";
 import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
 import type { Skeleton, SkeletonState, GuardedTransition } from "./schema.js";
 import { parseSkeletonXML } from "./xml.js";
 import { compileGuardExpr } from "./expr.js";
+
+// Path to the reharness package root — computed from this file's location at runtime.
+// codegen.js lives at <reharness-root>/dist/compiler/codegen.js → root is two levels up.
+const REHARNESS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** Compile every skeleton in `.reharness/skeletons/`, then reconcile orphan files. */
 export function generateAllFromSkeletons(reharnessDir: string): void {
@@ -60,15 +65,40 @@ function ensureESMPackage(projectRoot: string, fallbackName: string): void {
   const pkgPath = resolve(projectRoot, "package.json");
   if (!existsSync(pkgPath)) {
     writeFileSync(pkgPath, JSON.stringify({ name: fallbackName, private: true, type: "module" }, null, 2) + "\n");
-    return;
+  } else {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      if (!pkg.type) {
+        pkg.type = "module";
+        writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+      }
+    } catch { /* corrupt — leave alone */ }
   }
+  ensureReharnessLink(projectRoot);
+}
+
+/** Generated commands `import { defineCommand, definePipeline } from 'reharness'` — make sure that
+ *  resolves by symlinking the current reharness install into `<projectRoot>/node_modules/reharness`. */
+function ensureReharnessLink(projectRoot: string): void {
+  const nodeModules = resolve(projectRoot, "node_modules");
+  const link = resolve(nodeModules, "reharness");
   try {
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-    if (!pkg.type) {
-      pkg.type = "module";
-      writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+    // Already a working symlink? Done.
+    const st = lstatSync(link);
+    if (st.isSymbolicLink()) return;
+    // Real directory exists (e.g. real npm install) — don't touch it.
+    if (st.isDirectory()) return;
+  } catch { /* missing — fall through and create */ }
+  mkdirSync(nodeModules, { recursive: true });
+  try {
+    symlinkSync(REHARNESS_ROOT, link, "dir");
+  } catch (err: any) {
+    // EEXIST race or symlink unavailable — non-fatal, verify will surface the real problem.
+    if (err.code !== "EEXIST") {
+      // Best-effort logging; codegen should not throw if the link can't be created.
+      console.error(`⚠ ensureReharnessLink: ${err.message}`);
     }
-  } catch { /* corrupt — leave alone */ }
+  }
 }
 
 function emitCommand(sk: Skeleton, codeStates: string[]): string {

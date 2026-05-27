@@ -37,8 +37,13 @@
     <on event="PASS" target="verify" />
     <on event="FAIL">
       <go target="fill_prompts" retries-key="review" retries-max="2" />
+      <go target="redesign"     retries-key="review" retries-max="3" />
       <go target="error" />
     </on>
+  </state>
+
+  <state name="redesign" type="agent">
+    <on event="DONE" target="construct" />
   </state>
 
   <state name="verify" type="code">

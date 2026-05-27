@@ -119,6 +119,7 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
             `Do not modify any other files.`);
           if (!existsSync(reviewReportPath)) {
             c.emit("✗ review-report.md missing — treating as FAIL");
+            c.retry("review");
             return "FAIL";
           }
           const firstLine = readFileSync(reviewReportPath, "utf-8").trimStart().split(/\r?\n/)[0].trim();
@@ -133,10 +134,23 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
         on: {
           PASS: "verify",
           FAIL: [
-            { target: "fill_prompts", guard: (c) => c.retries("review") < 2 },
-            { target: "error" },
+            { target: "fill_prompts", guard: (c) => c.retries("review") < 2 },  // 1st FAIL → light retry
+            { target: "redesign",     guard: (c) => c.retries("review") < 3 },  // 2nd FAIL → skeleton patch
+            { target: "error" },                                                  // 3rd → give up
           ],
         },
+      },
+
+      redesign: {
+        entry: async (c) => {
+          await c.agent("redesign",
+            `The review step found issues that require skeleton-level changes (not just prompt/lib edits). ` +
+            `Read ${SCOPE}, ${DRAFT}, and ${REVIEW}. ` +
+            `Edit ONLY ${DRAFT} (and optionally ${SCOPE} if the scope itself has an unrealizable claim). ` +
+            `After your edit, the pipeline will re-run construct (regenerate codegen + stubs) then fill_prompts then review.`,
+          );
+        },
+        on: "construct",
       },
 
       verify: {
