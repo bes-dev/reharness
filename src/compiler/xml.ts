@@ -35,6 +35,7 @@ export function parseSkeletonXML(xml: string): Skeleton {
 function parseState(name: string, raw: any): SkeletonState {
   const st = parseStateBody(name, raw);
   if (raw["@_timeout"]) st.timeout = raw["@_timeout"];
+  if (raw["@_model-expr"]) st.modelExpr = raw["@_model-expr"];
   return st;
 }
 
@@ -244,6 +245,7 @@ export function serializeSkeletonXML(skeleton: Skeleton): string {
 
     const stateAttrs = [`name="${esc(name)}"`, `type="${state.type}"`];
     if (state.timeout) stateAttrs.push(`timeout="${esc(state.timeout)}"`);
+    if (state.modelExpr) stateAttrs.push(`model-expr="${esc(state.modelExpr)}"`);
     if (state.type === "approval" && state.autoEvent) stateAttrs.push(`auto-event="${esc(state.autoEvent)}"`);
     if (state.type === "wait") {
       if (state.waitMode) stateAttrs.push(`mode="${state.waitMode}"`);

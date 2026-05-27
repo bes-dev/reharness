@@ -203,6 +203,7 @@ ${assignments}
   if (state.type === "code" && !on["ERROR"]) on["ERROR"] = "error";
 
   if (state.type === "agent") {
+    const optsExpr = agentOpts(state, role);
     if (role === "branch") {
       return `        ${name}: {
           entry: async (c) => {
@@ -212,9 +213,7 @@ ${assignments}
               \`Branch directory: \${c.branchDir}\`,
               \`Branch input: \${JSON.stringify(c.branchInput)}\`,
             ].join('\\n');
-            const opts = (c.branchInput && typeof c.branchInput === 'object' && c.branchInput.model)
-              ? { model: c.branchInput.model } : undefined;
-            await c.agent('${name}', task, opts);
+            await c.agent('${name}', task, ${optsExpr});
           },
           on: ${emitTransitions(on)},
         },`;
@@ -229,7 +228,7 @@ ${assignments}
               c.data.branches !== undefined ? \`Branches: \${JSON.stringify(c.data.branches)}\` : '',
               c.data.iterations !== undefined ? \`Iterations completed: \${c.data.iterations}\` : '',
             ].filter(Boolean).join('\\n');
-            await c.agent('${name}', task);
+            await c.agent('${name}', task, ${optsExpr});
           },
           on: ${emitTransitions(on)},
         },`;
@@ -242,13 +241,13 @@ ${assignments}
               \`Working directory: \${c.config.target}\`,
               \`Input: \${c.config.input}\`,
             ].join('\\n');
-            await c.agent('${name}', task);
+            await c.agent('${name}', task, ${optsExpr});
           },
           on: ${emitTransitions(on)},
         },`;
     }
     return `        ${name}: {
-          entry: async (c) => { await c.agent('${name}', \`Execute the ${name} stage.\\nWorking directory: \${c.config.target}\\nInput: \${c.config.input}\`); },
+          entry: async (c) => { await c.agent('${name}', \`Execute the ${name} stage.\\nWorking directory: \${c.config.target}\\nInput: \${c.config.input}\`, ${optsExpr}); },
           on: ${emitTransitions(on)},
         },`;
   }
@@ -341,6 +340,18 @@ function stubFn(name: string, events: string[]): string {
 
 function sanitizeId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_]/g, "_");
+}
+
+/** Build the `opts` argument expression for an agent state's c.agent(name, task, OPTS) call.
+ *  Precedence: explicit modelExpr > parallel-branch input model > undefined. */
+function agentOpts(state: SkeletonState, role: "branch" | "join" | "step" | undefined): string {
+  const branchFallback = role === "branch"
+    ? `((c.branchInput && typeof c.branchInput === 'object' && c.branchInput.model) ? { model: c.branchInput.model } : undefined)`
+    : "undefined";
+  if (!state.modelExpr) return branchFallback;
+  const expr = compileGuardExpr(state.modelExpr);
+  // Compute once, then derive opts.
+  return `(((m) => (m ? { model: m } : ${branchFallback}))(${expr}))`;
 }
 
 function timeoutField(state: SkeletonState): string {

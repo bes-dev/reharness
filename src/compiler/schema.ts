@@ -68,6 +68,8 @@ export interface SkeletonState {
   waitPollInterval?: string;
   /** Universal: abort state execution after this duration. Triggers `TIMEOUT` event (or fail if no transition). */
   timeout?: string;
+  /** Agent only: expression returning model id (string) for `opts.model`. Falsy/undefined → use pipeline default. */
+  modelExpr?: string;
 }
 
 export interface Skeleton {
@@ -99,6 +101,14 @@ export function validateSkeleton(sk: Skeleton): string[] {
       }
       if (TIMEOUT_FORBIDDEN.has(state.type)) {
         errors.push(`State '${name}' type=${state.type} cannot have timeout`);
+      }
+    }
+    if (state.modelExpr) {
+      if (state.type !== "agent") {
+        errors.push(`State '${name}' type=${state.type} cannot have model-expr (only agent states)`);
+      } else {
+        try { compileGuardExpr(state.modelExpr); }
+        catch (e: any) { errors.push(`State '${name}' model-expr invalid: ${e.message}`); }
       }
     }
 

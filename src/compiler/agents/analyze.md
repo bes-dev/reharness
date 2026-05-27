@@ -82,7 +82,7 @@ XML skeleton in the reharness format. Reference:
 
 ## State types
 
-- **`agent`** — headless LLM run (input: files, output: files). No user interaction.
+- **`agent`** — headless LLM run (input: files, output: files). No user interaction. Optional `model-expr="EXPR"` attribute routes `opts.model` from a data/config expression (use this when a non-parallel agent must use a config-supplied model).
 - **`interactive`** — LLM with terminal attached, free-chat with the user. Requires `<artifacts><edit path=.../></artifacts>` (strict file-edit contract). Use when the task genuinely needs dialogue.
 - **`code`** — deterministic TypeScript function in `lib/<id>-states.ts`.
 - **`switch`** — declarative branching, no entry. Ordered `<go>` children, first guard true wins.
@@ -116,6 +116,32 @@ No function calls, no assignment, no ternary.
 ## Nested composition
 
 `parallel.branch` and `loop.steps` can themselves be `parallel`/`loop`/`set`/`code`/`agent` (loop.steps also accepts `approval`).
+
+## Architectural constraints — what downstream stages CAN realize
+
+These rules constrain what you can *promise* in `scope.md` and `plan.md`. The `fill_prompts` step only edits agent prompts (`agents/*.md`) and code-state implementations (`lib/*-states.ts`); it does NOT edit the skeleton (`skeletons/*.xml`). So any claim that requires a skeleton change must already be in the skeleton you produce in `draft-skeleton.xml`.
+
+### Per-agent model routing — three supported patterns, in priority order
+
+1. **Pipeline default** — agent state with no `model-expr` and not used as a parallel branch. Pi runs it on the model passed via `--model` CLI flag (or its own default if absent).
+2. **Per-branch routing in parallel** — when an `agent` state is the `branch` of a `parallel`, codegen automatically wires `opts.model = ctx.branchInput.model` if `branchInput` is an object with a `model` field. **Free** — no extra attribute needed. Use this pattern when the user provides an array of `{name, model}` and you fan out over it.
+3. **Static per-agent model from data** — declare `<state type="agent" model-expr="EXPR">`. Codegen emits `opts.model = EXPR` (when truthy). Use this when a single non-parallel agent must use a model loaded from config (e.g. `model-expr="data.aggregator.model"` for an aggregator stage). **Always use `model-expr` instead of claiming "agent uses config.X.model" in scope without wiring** — fill_prompts cannot retrofit this.
+
+### What is NOT supported (do not promise it in scope)
+
+- **Runtime-computed timeouts** — the `timeout` attribute is a static duration string parsed at compile time. You CANNOT say "`timeout = data.maxTurns * 3s`" in scope and expect codegen to substitute. Either use a fixed conservative cap and document the limitation, or implement turn budget enforcement inside the agent prompt and code states.
+- **Conditional model selection inside an agent state** — there is no `if X then model=A else model=B` for a single agent state. Use a `switch` state upstream that dispatches to two distinct agent states, each with its own static `model-expr`.
+- **Dynamic state count in `loop.steps`** — the `<step>` list is fixed at skeleton-time. For variable per-iteration sequences, dispatch from a single `code`-step that orchestrates.
+- **Modifying skeleton structure after construct** — `fill_prompts` cannot add states, change transitions, retitle, or alter the topology. Get it right in `draft-skeleton.xml`.
+
+### Implications for `scope.md` Wiring contract
+
+For every config field / data flow / per-state option you mention as supported, you must name **exactly one** of:
+- which lib code-state function reads it (e.g. "`load_configEntry` parses `aggregator.model` into `c.data.aggregator.model`")
+- which agent invocation receives it via auto-wiring (e.g. "`review_one` is `parallel.branch` — `opts.model` auto-wired from `branchInput.model`")
+- which `model-expr` attribute consumes it (e.g. "`aggregate` state declares `model-expr=\"data.aggregator.model\"`")
+
+If you cannot point to one of these three mechanisms, **the claim is unrealizable — either remove it from scope or change the skeleton design to support it**.
 
 ## Rules
 
