@@ -1,10 +1,19 @@
 #!/usr/bin/env node
 import "tsx/esm";
 
-import { resolve } from "path";
+import { readFileSync } from "fs";
+import { dirname, resolve } from "path";
+import { fileURLToPath } from "url";
 import { loadProject } from "./runtime/project.js";
 import type { Pipeline, Project, RunOptions } from "./runtime/types.js";
 import { runGenerate } from "./compiler/runner.js";
+
+// Read version from package.json at runtime — single source of truth.
+const PACKAGE_JSON = resolve(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+const VERSION: string = (() => {
+  try { return JSON.parse(readFileSync(PACKAGE_JSON, "utf-8")).version || "unknown"; }
+  catch { return "unknown"; }
+})();
 
 const ansi = {
   dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
@@ -17,6 +26,7 @@ const ansi = {
 
 const args = process.argv.slice(2);
 
+if (args.includes("--version") || args.includes("-v")) { console.log(VERSION); process.exit(0); }
 if (args.includes("--help") || args.includes("-h")) { printUsage(); process.exit(0); }
 
 async function main() {
@@ -96,7 +106,7 @@ function formatDuration(ms: number): string {
 
 function printUsage() {
   const { dim: d, bold: b, cyan: c } = ansi;
-  console.log(`${b("reharness")} ${d("— conversational AI workflow compiler")}
+  console.log(`${b("reharness")} ${d(`v${VERSION} — conversational AI workflow compiler`)}
 
 ${b("Usage:")}
   ${c("reharness")}                          ${d("list compiled commands")}
@@ -108,6 +118,7 @@ ${b("Options:")}
   ${c("--model")} <id>     ${d("LLM model (e.g. anthropic/claude-sonnet-4-6)")}
   ${c("--auto-approve")}   ${d("resolve approval checkpoints via auto-event")}
   ${c("--resume")}         ${d("resume the latest interrupted run")}
+  ${c("--version")}        ${d("print version and exit")}
   ${c("--help")}           ${d("this help")}`);
 }
 
