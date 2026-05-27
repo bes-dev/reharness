@@ -496,6 +496,9 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
     }
 
     // ── Outer FSM loop ──
+    const formatElapsed = (ms: number) => ms < 1000 ? `${ms}ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m${Math.floor((ms % 60_000) / 1000)}s`;
+    let prevStateName = "";
+    let prevStateStart = 0;
     while (true) {
       if (signal?.aborted) return fail("⚠ Aborted by user");
 
@@ -503,6 +506,9 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
       if (!state) return fail(`✗ Unknown state "${current}"`);
 
       save(runDir, snapshot(current));
+      if (prevStateName) emit(`  └─ ${prevStateName} ${formatElapsed(Date.now() - prevStateStart)}`);
+      prevStateName = current;
+      prevStateStart = Date.now();
       emit(`── ${current} ──`);
 
       if (isFinal(state)) {

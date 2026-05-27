@@ -5,7 +5,7 @@ import { definePipeline } from "../runtime/fsm.js";
 import type { Pipeline } from "../runtime/types.js";
 import { parseSkeletonXML } from "./xml.js";
 import { validateSkeleton } from "./schema.js";
-import { generateAllFromSkeletons } from "./codegen.js";
+import { generateAllFromSkeletons, emitCompiledFromSkeletonsDir } from "./codegen.js";
 import { verifyGenerated } from "./verify.js";
 
 const BUILTIN_AGENTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "agents");
@@ -19,6 +19,7 @@ const REVIEW = ".reharness/generate/review-report.md";
 export interface GenerateOptions {
   cwd: string;
   input: string;
+  fast?: boolean;
 }
 
 /** Self-hosted FSM that compiles a workflow from a natural-language description. */
@@ -29,9 +30,10 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
   const draftPath = resolve(target, DRAFT);
   const reviewReportPath = resolve(target, REVIEW);
   const verifyErrorsPath = resolve(genDir, "verify-errors.md");
+  const fast = !!opts.fast;
 
   return definePipeline({
-    config: { target, input: opts.input },
+    config: { target, input: opts.input, fast },
     initial: "analyze",
     cwd: target,
     agents: BUILTIN_AGENTS_DIR,
@@ -41,11 +43,15 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
       analyze: {
         entry: async (c) => {
           mkdirSync(genDir, { recursive: true });
+          const fastNote = c.config.fast
+            ? `\n\nFAST MODE: skip the web research step entirely. Rely only on training knowledge for domain enrichment. Mark every suggested addition in plan.md with "[fast mode — training-knowledge only]" so the user knows the sources are not verified.`
+            : "";
           await c.agent("analyze",
             `Design and enrich a reharness FSM workflow for:\n\n${c.config.input}\n\n` +
             `Write THREE artifacts to .reharness/generate/: plan.md (human-readable, shown at approval), ` +
             `scope.md (technical LLM-spec), draft-skeleton.xml (codegen XML). ` +
-            `The plan.md must enumerate core features + suggested best-practice additions separately, so the user can drop additions they don't want.`,
+            `The plan.md must enumerate core features + suggested best-practice additions separately, so the user can drop additions they don't want.` +
+            fastNote,
           );
         },
         on: "review_design",
@@ -100,21 +106,33 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
           const verifyFailed = existsSync(verifyErrorsPath)
             && readFileSync(verifyErrorsPath, "utf-8").trim().length > 0;
 
-          const task = reviewFailed
-            ? `Address every issue listed in ${REVIEW}. Modify only the prompts (agents/*.md) or code states (lib/*-states.ts) — do not edit skeletons or commands. Then exit; the runtime will re-review.`
+          // Two halves run in parallel — agent prompts (.md) and lib code (.ts) are independent.
+          const mdTask = reviewFailed
+            ? `Address every issue in ${REVIEW} that mentions agents/*.md prompts. Edit ONLY .reharness/agents/*.md files.`
             : verifyFailed
-              ? `Fix the verify errors listed in .reharness/generate/verify-errors.md. Modify only the relevant prompts or code state implementations.`
-              : `Fill the agent prompt stubs (<!-- TODO) in .reharness/agents/*.md and the code state stubs (// TODO) in .reharness/lib/*-states.ts. Use ${SCOPE} as the spec.`;
-          await c.agent("fill_prompts", task);
+              ? `Fix .reharness/agents/*.md issues from verify-errors.md. Edit only those.`
+              : `Fill the agent prompt stubs (<!-- TODO) in .reharness/agents/*.md. Use ${SCOPE} as the spec. Edit only .md files.`;
+          const libTask = reviewFailed
+            ? `Address every issue in ${REVIEW} that mentions lib/*-states.ts code. Edit ONLY .reharness/lib/<id>-states.ts.`
+            : verifyFailed
+              ? `Fix .reharness/lib/*-states.ts issues from verify-errors.md. Edit only that file.`
+              : `Fill the code state stubs (// TODO) in .reharness/lib/<id>-states.ts. Use ${SCOPE} as the spec. Edit only the lib .ts file.`;
+
+          await Promise.all([
+            c.agent("fill_prompts_md", mdTask),
+            c.agent("fill_prompts_lib", libTask),
+          ]);
         },
         on: "review",
       },
 
       review: {
         entry: async (c) => {
+          // Refresh the single-file consolidated view so the agent reads ONE file instead of 17+.
+          emitCompiledFromSkeletonsDir(reharnessDir);
           await c.agent("review",
-            `Review the generated reharness FSM against the spec at ${SCOPE}. ` +
-            `Read all of: .reharness/skeletons/*.xml, .reharness/agents/*.md, .reharness/lib/*-states.ts. ` +
+            `Review the generated reharness FSM against its spec. ` +
+            `Read ONLY .reharness/generate/_compiled.md — it consolidates scope + skeleton + every agent prompt + lib code into one document. ` +
             `Write your report to ${REVIEW} with the first line being exactly PASS or FAIL. ` +
             `Do not modify any other files.`);
           if (!existsSync(reviewReportPath)) {

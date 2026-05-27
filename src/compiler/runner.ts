@@ -16,6 +16,7 @@ export interface RunGenerateOptions {
   input: string;
   autoApprove?: boolean;
   piModel?: string;
+  fast?: boolean;
 }
 
 export async function runGenerate(opts: RunGenerateOptions): Promise<number> {

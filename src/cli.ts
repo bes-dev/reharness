@@ -30,19 +30,20 @@ if (args.includes("--version") || args.includes("-v")) { console.log(VERSION); p
 if (args.includes("--help") || args.includes("-h")) { printUsage(); process.exit(0); }
 
 async function main() {
-  let piModel: string | undefined, autoApprove = false, resume = false;
+  let piModel: string | undefined, autoApprove = false, resume = false, fast = false;
   const rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--model" && i + 1 < args.length) piModel = args[++i];
     else if (args[i] === "--auto-approve") autoApprove = true;
     else if (args[i] === "--resume") resume = true;
+    else if (args[i] === "--fast") fast = true;
     else rest.push(args[i]);
   }
 
   const cwd = resolve(".");
 
   if (rest[0] === "generate") {
-    process.exit(await runGenerate({ cwd, input: rest.slice(1).join(" "), autoApprove, piModel }));
+    process.exit(await runGenerate({ cwd, input: rest.slice(1).join(" "), autoApprove, piModel, fast }));
   }
 
   const project = await loadProject(cwd);
@@ -118,6 +119,7 @@ ${b("Options:")}
   ${c("--model")} <id>     ${d("LLM model (e.g. anthropic/claude-sonnet-4-6)")}
   ${c("--auto-approve")}   ${d("resolve approval checkpoints via auto-event")}
   ${c("--resume")}         ${d("resume the latest interrupted run")}
+  ${c("--fast")}           ${d("skip web research in /generate (iteration mode)")}
   ${c("--version")}        ${d("print version and exit")}
   ${c("--help")}           ${d("this help")}`);
 }
