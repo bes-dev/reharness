@@ -179,6 +179,16 @@ export interface Pipeline {
 
 export interface AgentOpts {
   model?: string;
+  /** Upstream single-dir producers visible to this agent (top-level / loop-step). Runtime injects each dir. */
+  inputs?: string[];
+  /** Upstream parallel-branch producers visible to this agent — each injected as one dir per branch item.
+   *  Both lists are derived from the graph by codegen (visibleProducers), never hand-written. */
+  inputLists?: string[];
+  /** Deterministic in-session validator: returns error strings (empty = ok). On failure the agent's live
+   *  session is re-prompted with the errors so it self-corrects in-context. Runs the agent under RPC. */
+  validate?: () => string[] | Promise<string[]>;
+  /** Agent-dir-relative prompt basename to append to the system prompt (e.g. a shared syntax reference). */
+  append?: string;
 }
 
 export interface InteractiveOpts extends AgentOpts {
@@ -196,9 +206,21 @@ export interface StateContext<C extends Record<string, any> = Record<string, any
   shell: (cmd: string, label?: string) => boolean;
   retry: (key: string) => number;
   retries: (key: string) => number;
+  /** In-memory scalars (written by code/set states; read by guards/over/exit/model-expr). Runtime-provided keys:
+   *  `data.iteration` = the CURRENT loop iteration's 0-based COORDINATE (valid only inside a loop step; after the
+   *  loop it holds the last index, not a count). `data.iterations` = the iteration COUNT (cardinality), set after
+   *  the loop completes. To report "how many iterations ran", read `data.iterations` — never `data.iteration + 1`. */
   data: Record<string, any>;
   runDir: string;
   runId: string;
+  /** Name of the stage currently executing (set by the runtime). Backs `c.out`. */
+  stage?: string;
+  /** This stage's own output directory (per-branch when running as a parallel branch). Write outputs here. */
+  out: () => string;
+  /** A single upstream producer's output dir (top-level / loop-step stage). Read its files from here. */
+  dir: (stage: string) => string;
+  /** A parallel-branch producer's output dirs — one per branch item (globbed). Read each branch's files. */
+  dirs: (stage: string) => string[];
   /** Abort signal for the current state — combines pipeline-level and state-level timeouts. */
   signal?: AbortSignal;
   /** Set only when invoked as a parallel branch: the current item from `over` expression. */
@@ -207,6 +229,9 @@ export interface StateContext<C extends Record<string, any> = Record<string, any
   branchIndex?: number;
   /** Set only when invoked as a parallel branch: absolute path to per-branch workspace. */
   branchDir?: string;
+  /** This execution's INSTANCE VECTOR: one index per enclosing composite (parallel branch / loop iteration),
+   *  outermost-first. Backs the workspace addressing (c.out/c.dir/c.dirs). `[]` at the top level. */
+  instancePath?: number[];
 }
 
 export interface CommandContext {

@@ -19,18 +19,20 @@ reharness <command> args   # Direct
 ## How `generate` works
 
 ```
-analyze (agent)   — writes scope.md + draft-skeleton.xml
-review_design     — APPROVAL CHECKPOINT
-                    Approve  → construct
-                    Revise   → analyze (with accumulated feedback)
-construct (code)  — validate, copy to skeletons/, codegen
+research (agent)  — optional domain research (skipped with --fast)
+prd (agent)       — distil a human-readable PRD (spec) from request + research
+review_prd        — APPROVAL CHECKPOINT (the ONLY thing the human approves)
+                    Approve  → design
+                    Revise   → discuss_prd (interactive) → re-approve
+design (agent)    — one pass: graph + per-node behavioural <contract>
+construct (code)  — validate, derive inter-stage wiring from the graph, codegen
 fill_prompts      — agent fills agent prompts + code-state implementations
-verify (code)     — TS compile + structural checks
-                    PASS → done
-                    FAIL → fill_prompts (≤2 retries) → error
+check_dataflow    — deterministic use-before-def report (fed to polish)
+polish (agent)    — one pass: review vs PRD + fix leaves (prompts/code); topology issue → redesign (rare)
+verify (code)     — TS compile + structural checks → done
 ```
 
-One checkpoint, agent-friendly. `--auto-approve` resolves it via the state's `auto-event` and emits a warning — same workflow serves humans and agents.
+The human approves the **PRD** — confirmation the compiler understood the intent — never the FSM graph. Everything downstream is generated from the approved PRD. One checkpoint, agent-friendly: `--auto-approve` resolves it via the state's `auto-event` and emits a warning, so the same workflow serves humans and agents.
 
 ## Writing a pipeline by hand
 
@@ -94,7 +96,7 @@ my-project/
 │   ├── commands/    # Generated from skeletons — do not edit
 │   ├── agents/      # Agent prompts (edit freely)
 │   ├── lib/         # Code-state implementations (edit freely)
-│   ├── generate/    # Compiler artifacts (scope.md, draft-skeleton.xml, verify-errors.md)
+│   ├── generate/    # Compiler artifacts (prd.md, draft-skeleton.xml, verify-errors.md)
 │   ├── feedback/    # Per-round REVISED feedback, accumulated
 │   └── logs/        # Run logs
 ```

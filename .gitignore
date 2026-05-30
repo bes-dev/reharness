@@ -2,3 +2,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 research/
+
+# local / throwaway
+.claude/settings.local.json
+*.backup
+examples/nitpicker*/
+examples/presenter/

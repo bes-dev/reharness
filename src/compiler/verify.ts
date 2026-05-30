@@ -37,8 +37,17 @@ export function verifyGenerated(targetDir: string): string[] {
     }
     const libPath = resolve(libDir, `${sk.id}-states.ts`);
     if (existsSync(libPath)) {
-      const todos = (readFileSync(libPath, "utf-8").match(/\/\/\s*TODO/g) || []).length;
+      const lib = readFileSync(libPath, "utf-8");
+      const todos = (lib.match(/\/\/\s*TODO/g) || []).length;
       if (todos) errors.push(`## Unfilled code state\n[${sk.id}] \`lib/${sk.id}-states.ts\` has ${todos} TODO(s)`);
+
+      // Code states must be deterministic — they must NOT invoke agents. An embedded `c.agent('X')`
+      // has no prompt file (codegen only creates prompts for declared agent states) and throws at runtime.
+      const embedded = new Set<string>();
+      for (const m of lib.matchAll(/\b(?:c|ctx)\.agent\(\s*['"]([^'"]+)['"]/g)) embedded.add(m[1]);
+      if (embedded.size) {
+        errors.push(`## Embedded agent call in code state\n[${sk.id}] \`lib/${sk.id}-states.ts\` calls c.agent(${[...embedded].map(n => `'${n}'`).join(", ")}) from a code state. Code states are deterministic and must not invoke agents — promote each LLM call to its own \`agent\` state (or a \`parallel\`/\`loop\` over an agent state).`);
+      }
     }
   }
 

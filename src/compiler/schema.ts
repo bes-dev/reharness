@@ -1,11 +1,5 @@
-import { compileGuardExpr } from "./expr.js";
-
-/** State types allowed as a `parallel` branch. Excludes routing-only (switch/check), terminal (final),
- * interactive (terminal contention), and approval (parallel terminal contention). */
-const BRANCH_ALLOWED = new Set<SkeletonState["type"]>(["agent", "code", "set", "parallel", "loop"]);
-
-/** State types allowed as a `loop` step. Same as branches, plus approval (loop is sequential — no contention). */
-const STEP_ALLOWED = new Set<SkeletonState["type"]>(["agent", "code", "set", "approval", "parallel", "loop"]);
+/** Skeleton ids reserved by reharness itself. */
+export const RESERVED_IDS = new Set(["generate", "evolve"]);
 
 export interface GuardedTransition {
   target: string;
@@ -40,12 +34,13 @@ export interface SkeletonState {
   /** Parallel only: state name to invoke per item. */
   parallelBranch?: string;
   /** Parallel / loop: state to transition to after the construct completes. */
-  parallelJoin?: string;
+  join?: string;
   /** Parallel only: max concurrent branches (optional cap). */
   concurrency?: number;
   /** Loop only: ordered list of state names to run per iteration. */
   loopSteps?: string[];
-  /** Loop only: hard iteration cap (safety). At least one of maxIterations/exitExpr required. */
+  /** Loop only: hard iteration cap (safety). REQUIRED on every loop — guarantees termination (lint enforces
+   *  it). `exitExpr` is an optional early-out, not a substitute for the bound. */
   maxIterations?: number;
   /** Loop only: expression evaluated after each iteration; truthy → exit to join. */
   exitExpr?: string;
@@ -70,6 +65,31 @@ export interface SkeletonState {
   timeout?: string;
   /** Agent only: expression returning model id (string) for `opts.model`. Falsy/undefined → use pipeline default. */
   modelExpr?: string;
+  /** Behavioural contract: what this node must guarantee. Written by the `design` pass; consumed by fill_prompts. */
+  contract?: string;
+  /** data.* / config.* keys this node REQUIRES present on entry (code/set states). Extracted from generated
+   *  code for code states; the data-flow (use-before-def) analyzer uses it. */
+  reads?: string[];
+  /** data.* keys this node DEFINITELY sets (code/set states). Extracted from generated code for code states. */
+  writes?: string[];
+}
+
+/** One CLI input the pipeline reads as `config.<name>`. The EXTERNAL interface (user → pipeline) — it cannot
+ *  be derived from the graph (no producer node, no edge), so it is declared; codegen generates the parser and
+ *  the static config-flow check verifies every `config.X` the pipeline reads is declared here. */
+export interface InputDecl {
+  /** Field on `config`. Read in code as `c.config.<name>`, in expressions as `config.<name>`. */
+  name: string;
+  /** Parse from a positional argument (in declaration order) instead of a flag. */
+  positional?: boolean;
+  /** CLI flag override; default is `--<name-in-kebab>`. Ignored when `positional`. */
+  flag?: string;
+  /** Coercion of the raw string: list = comma-split, bool = presence. Default `string`. */
+  type?: "string" | "number" | "list" | "bool";
+  /** Default value (string literal, coerced by `type`) when the arg is absent. */
+  default?: string;
+  /** If set and absent with no default, the command reports a usage error (returns null). */
+  required?: boolean;
 }
 
 export interface Skeleton {
@@ -78,189 +98,7 @@ export interface Skeleton {
   usage: string;
   initial: string;
   formatVersion?: string;
+  /** Declared CLI inputs (the external interface). Empty/absent → only `config.{target,input}` are provided. */
+  inputs?: InputDecl[];
   states: Record<string, SkeletonState>;
-}
-
-export function validateSkeleton(sk: Skeleton): string[] {
-  const errors: string[] = [];
-  const names = new Set(Object.keys(sk.states));
-
-  if (!sk.id) errors.push("Missing 'id'");
-  if (!sk.description) errors.push("Missing 'description'");
-  if (!sk.usage) errors.push("Missing 'usage'");
-  if (!sk.initial) errors.push("Missing 'initial'");
-  if (sk.initial && !names.has(sk.initial)) errors.push(`Initial state '${sk.initial}' does not exist`);
-
-  const TIMEOUT_FORBIDDEN = new Set<SkeletonState["type"]>(["switch", "set", "final", "wait"]);
-
-  let hasFinal = false;
-  for (const [name, state] of Object.entries(sk.states)) {
-    if (state.timeout) {
-      if (!/^\d+\s*(ms|s|m|h)$/.test(state.timeout)) {
-        errors.push(`State '${name}' timeout '${state.timeout}' invalid (expected e.g. "30s", "5m")`);
-      }
-      if (TIMEOUT_FORBIDDEN.has(state.type)) {
-        errors.push(`State '${name}' type=${state.type} cannot have timeout`);
-      }
-    }
-    if (state.modelExpr) {
-      if (state.type !== "agent") {
-        errors.push(`State '${name}' type=${state.type} cannot have model-expr (only agent states)`);
-      } else {
-        try { compileGuardExpr(state.modelExpr); }
-        catch (e: any) { errors.push(`State '${name}' model-expr invalid: ${e.message}`); }
-      }
-    }
-
-    if (state.type === "final") {
-      hasFinal = true;
-      if (!state.status) errors.push(`Final state '${name}' missing 'status'`);
-      continue;
-    }
-
-    if (state.type === "switch") {
-      if (!state.branches || state.branches.length === 0) {
-        errors.push(`Switch state '${name}' must declare at least one <go>`);
-      } else {
-        for (const gt of state.branches) {
-          if (!names.has(gt.target)) errors.push(`Switch '${name}' → '${gt.target}' does not exist`);
-          validateGuard(name, gt.guard, errors);
-        }
-      }
-      continue;
-    }
-
-    if (state.type === "set") {
-      if (!state.dataAssignments || state.dataAssignments.length === 0) {
-        errors.push(`Set state '${name}' must declare at least one <data key=... value=.../>`);
-      } else {
-        for (const a of state.dataAssignments) {
-          if (!a.key) errors.push(`Set state '${name}' has <data> without key`);
-          try { compileGuardExpr(a.value); }
-          catch (e: any) { errors.push(`Set state '${name}' data '${a.key}' value: ${e.message}`); }
-        }
-      }
-    }
-
-    if (state.type === "loop") {
-      if (!state.loopSteps || state.loopSteps.length === 0) {
-        errors.push(`Loop state '${name}' must declare at least one <step state=.../>`);
-      } else {
-        for (const s of state.loopSteps) {
-          if (!names.has(s)) errors.push(`Loop state '${name}' step '${s}' does not exist`);
-          else {
-            const st = sk.states[s].type;
-            if (!STEP_ALLOWED.has(st)) {
-              errors.push(`Loop state '${name}' step '${s}' must be one of [${[...STEP_ALLOWED].join(", ")}], got ${st}`);
-            }
-          }
-        }
-      }
-      if (!state.parallelJoin) errors.push(`Loop state '${name}' missing 'join' attribute`);
-      else if (!names.has(state.parallelJoin)) errors.push(`Loop state '${name}' join '${state.parallelJoin}' does not exist`);
-      if (!state.maxIterations && !state.exitExpr) {
-        errors.push(`Loop state '${name}' needs at least one of 'max' or 'exit' attributes (to terminate)`);
-      }
-      if (state.maxIterations !== undefined && (!Number.isInteger(state.maxIterations) || state.maxIterations < 1)) {
-        errors.push(`Loop state '${name}' max must be a positive integer`);
-      }
-      if (state.exitExpr) {
-        try { compileGuardExpr(state.exitExpr); }
-        catch (e: any) { errors.push(`Loop state '${name}' exit expr invalid: ${e.message}`); }
-      }
-      continue;
-    }
-
-    if (state.type === "wait") {
-      const mode = state.waitMode;
-      if (!mode) errors.push(`Wait state '${name}' missing 'mode' attribute`);
-      else if (!["timer", "file", "shell", "webhook"].includes(mode)) {
-        errors.push(`Wait state '${name}' invalid mode '${mode}' (expected timer|file|shell|webhook)`);
-      } else {
-        if (mode === "timer" && !state.waitDuration) errors.push(`Wait '${name}' mode=timer needs 'duration'`);
-        if (mode === "file" && !state.waitPath) errors.push(`Wait '${name}' mode=file needs 'path'`);
-        if (mode === "shell" && !state.waitCommand) errors.push(`Wait '${name}' mode=shell needs 'command'`);
-        if (mode === "webhook") {
-          if (!state.waitPort) errors.push(`Wait '${name}' mode=webhook needs 'port'`);
-          if (!state.waitPath) errors.push(`Wait '${name}' mode=webhook needs 'path'`);
-        }
-      }
-      for (const d of [state.waitDuration, state.waitTimeout, state.waitPollInterval]) {
-        if (d && !/^\d+\s*(ms|s|m|h)$/.test(d)) errors.push(`Wait '${name}' invalid duration '${d}' (expected e.g. "30s", "5m", "1h")`);
-      }
-      if (!state.on?.["DONE"]) errors.push(`Wait '${name}' must declare <on event="DONE" .../>`);
-    }
-
-    if (state.type === "call") {
-      if (!state.callSkeleton) errors.push(`Call state '${name}' missing 'skeleton' attribute`);
-      if (state.callArgsExpr) {
-        try { compileGuardExpr(state.callArgsExpr); }
-        catch (e: any) { errors.push(`Call state '${name}' args expr invalid: ${e.message}`); }
-      }
-      if (!state.on || !state.on["success"] || !state.on["error"]) {
-        errors.push(`Call state '${name}' must declare both <on event="success" .../> and <on event="error" .../>`);
-      }
-      // Note: existence of target skeleton is checked at codegen time, not here.
-    }
-
-    if (state.type === "parallel") {
-      if (!state.overExpr) errors.push(`Parallel state '${name}' missing 'over' attribute`);
-      else {
-        try { compileGuardExpr(state.overExpr); }
-        catch (e: any) { errors.push(`Parallel state '${name}' over expr invalid: ${e.message}`); }
-      }
-      if (!state.parallelBranch) errors.push(`Parallel state '${name}' missing 'branch' attribute`);
-      else if (!names.has(state.parallelBranch)) errors.push(`Parallel state '${name}' branch '${state.parallelBranch}' does not exist`);
-      else {
-        const bt = sk.states[state.parallelBranch].type;
-        if (!BRANCH_ALLOWED.has(bt)) {
-          errors.push(`Parallel state '${name}' branch '${state.parallelBranch}' must be one of [${[...BRANCH_ALLOWED].join(", ")}], got ${bt}`);
-        }
-      }
-      if (!state.parallelJoin) errors.push(`Parallel state '${name}' missing 'join' attribute`);
-      else if (!names.has(state.parallelJoin)) errors.push(`Parallel state '${name}' join '${state.parallelJoin}' does not exist`);
-      if (state.concurrency !== undefined && (!Number.isInteger(state.concurrency) || state.concurrency < 1)) {
-        errors.push(`Parallel state '${name}' concurrency must be a positive integer`);
-      }
-      continue;
-    }
-
-    if (state.type === "interactive" && (!state.artifacts || state.artifacts.length === 0)) {
-      errors.push(`Interactive state '${name}' must declare at least one <artifacts><edit path=.../></artifacts>`);
-    }
-
-    if (state.type === "approval") {
-      if (!state.prompt) errors.push(`Approval state '${name}' missing <prompt>`);
-      if (state.autoEvent && state.on && !state.on[state.autoEvent]) {
-        errors.push(`Approval state '${name}' auto-event '${state.autoEvent}' not in transitions`);
-      }
-    }
-
-    if (!state.on || Object.keys(state.on).length === 0) {
-      errors.push(`Non-final state '${name}' has no transitions`);
-      continue;
-    }
-
-    for (const [event, target] of Object.entries(state.on)) {
-      const targets = typeof target === "string" ? [{ target, guard: undefined }] : target;
-      for (const gt of targets) {
-        if (!names.has(gt.target)) errors.push(`State '${name}' event '${event}' → '${gt.target}' does not exist`);
-        validateGuard(name, gt.guard, errors);
-      }
-    }
-  }
-
-  if (!hasFinal) errors.push("No final state defined");
-  return errors;
-}
-
-function validateGuard(stateName: string, guard: string | undefined, errors: string[]): void {
-  if (!guard) return;
-  if (/^retries:\w+<\d+$/.test(guard)) return;
-  if (guard.startsWith("expr:")) {
-    try { compileGuardExpr(guard.slice(5)); }
-    catch (e: any) { errors.push(`State '${stateName}' guard expr invalid: ${e.message}`); }
-    return;
-  }
-  errors.push(`State '${stateName}' guard '${guard}' invalid (expected 'retries:key<N' or 'expr:...')`);
 }

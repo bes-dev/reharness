@@ -53,7 +53,14 @@ function tokenize(src: string): Token[] {
 
     if (c >= "0" && c <= "9") {
       let j = i;
-      while (j < src.length && /[0-9.]/.test(src[j])) j++;
+      let seenDot = false;
+      // Consume digits and AT MOST one decimal point. A second "." (e.g. "1.2.3") ends the token,
+      // leaving the stray "." to fail as an unexpected character — a clean compile-time rejection
+      // instead of emitting malformed JS into the generated guard.
+      while (j < src.length && (/[0-9]/.test(src[j]) || (src[j] === "." && !seenDot))) {
+        if (src[j] === ".") seenDot = true;
+        j++;
+      }
       out.push({ kind: "number", value: src.slice(i, j) });
       i = j;
       continue;
@@ -86,6 +93,18 @@ function tokenize(src: string): Token[] {
 export function compileGuardExpr(src: string): string {
   const tokens = tokenize(src);
   if (tokens.length === 0) throw new Error("Empty guard expression");
+
+  // Reject function calls: an identifier immediately followed by "(" is a call (e.g. data.x.constructor('…')()).
+  // The "safe subset" must not be able to invoke anything — guard/over/exit/model-expr come from LLM-authored
+  // XML and are embedded verbatim into generated code, so a call here is a code-execution surface.
+  for (let i = 1; i < tokens.length; i++) {
+    if (tokens[i].kind === "lparen") {
+      const prev = tokens[i - 1];
+      if ((prev.kind === "ident" && !KEYWORDS.has(prev.value)) || prev.kind === "rparen" || prev.kind === "rbracket") {
+        throw new Error(`Function calls are not allowed in expressions (near "${prev.kind === "ident" ? prev.value : ")"}(")`);
+      }
+    }
+  }
 
   for (const t of tokens) {
     if (t.kind !== "ident") continue;

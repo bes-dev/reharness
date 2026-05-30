@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 import { loadProject } from "./runtime/project.js";
 import type { Pipeline, Project, RunOptions } from "./runtime/types.js";
 import { runGenerate } from "./compiler/runner.js";
+import { ansi, emit, formatDuration } from "./term.js";
 
 // Read version from package.json at runtime — single source of truth.
 const PACKAGE_JSON = resolve(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
@@ -14,15 +15,6 @@ const VERSION: string = (() => {
   try { return JSON.parse(readFileSync(PACKAGE_JSON, "utf-8")).version || "unknown"; }
   catch { return "unknown"; }
 })();
-
-const ansi = {
-  dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
-  bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
-  green: (s: string) => `\x1b[32m${s}\x1b[0m`,
-  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
-  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
-  cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
-};
 
 const args = process.argv.slice(2);
 
@@ -36,7 +28,7 @@ async function main() {
     if (args[i] === "--model" && i + 1 < args.length) piModel = args[++i];
     else if (args[i] === "--auto-approve") autoApprove = true;
     else if (args[i] === "--resume") resume = true;
-    else if (args[i] === "--fast") fast = true;
+    else if (args[i] === "--fast" || args[i] === "--no-research") fast = true;
     else rest.push(args[i]);
   }
 
@@ -83,26 +75,12 @@ async function runPipeline(pipeline: Pipeline, opts: RunOptions): Promise<number
   }
 }
 
-function emit(msg: string) {
-  const m = msg.match(/^── (\S+) ──$/);
-  if (m) { process.stdout.write(`\r\x1b[K${ansi.cyan("⠋")} ${ansi.bold(m[1])}\n`); return; }
-  if (!msg.trim()) return;
-  const c = msg[0] === "✓" ? ansi.green : msg[0] === "✗" ? ansi.red : msg[0] === "⚠" ? ansi.yellow : (s: string) => s;
-  console.log(`  ${c(msg)}`);
-}
-
 function listCommands(project: Project) {
   console.log(`${ansi.bold("reharness")} ${ansi.dim("— available commands")}\n`);
   for (const [name, def] of Object.entries(project.commands)) {
     const usage = def.usage ? ansi.dim(` ${def.usage}`) : "";
     console.log(`  ${ansi.cyan(name)}${usage}  ${ansi.dim(def.description)}`);
   }
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60_000)}m${Math.floor((ms % 60_000) / 1000)}s`;
 }
 
 function printUsage() {
@@ -119,7 +97,7 @@ ${b("Options:")}
   ${c("--model")} <id>     ${d("LLM model (e.g. anthropic/claude-sonnet-4-6)")}
   ${c("--auto-approve")}   ${d("resolve approval checkpoints via auto-event")}
   ${c("--resume")}         ${d("resume the latest interrupted run")}
-  ${c("--fast")}           ${d("skip web research in /generate (iteration mode)")}
+  ${c("--fast")}           ${d("skip web research in /generate (alias: --no-research)")}
   ${c("--version")}        ${d("print version and exit")}
   ${c("--help")}           ${d("this help")}`);
 }

@@ -1,12 +1,12 @@
 import { XMLParser } from "fast-xml-parser";
-import type { Skeleton, SkeletonState, GuardedTransition, DataAssignment } from "./schema.js";
+import type { Skeleton, SkeletonState, GuardedTransition, DataAssignment, InputDecl } from "./schema.js";
 
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "@_",
   trimValues: true,
   parseAttributeValue: false,
-  isArray: (name) => ["state", "on", "go", "show", "edit", "data", "step"].includes(name),
+  isArray: (name) => ["state", "on", "go", "show", "edit", "data", "step", "arg"].includes(name),
 });
 
 export function parseSkeletonXML(xml: string): Skeleton {
@@ -23,23 +23,69 @@ export function parseSkeletonXML(xml: string): Skeleton {
     states: {},
   };
 
+  const args = sk.inputs?.arg || [];
+  if (args.length) result.inputs = args.map((a: any): InputDecl => {
+    const d: InputDecl = { name: a["@_name"] || "" };
+    if (a["@_positional"] === "true") d.positional = true;
+    if (a["@_flag"]) d.flag = a["@_flag"];
+    if (a["@_type"]) d.type = a["@_type"];
+    if (a["@_default"] !== undefined) d.default = String(a["@_default"]);
+    if (a["@_required"] === "true") d.required = true;
+    return d;
+  });
+
   for (const state of sk.state || []) {
     const name = state["@_name"];
     if (!name) throw new Error("<state> missing name attribute");
-    result.states[name] = parseState(name, state);
+    if (result.states[name]) throw new Error(`<state name="${name}"> is declared more than once`);
+    result.states[name] = parseState(state);
   }
 
   return result;
 }
 
-function parseState(name: string, raw: any): SkeletonState {
-  const st = parseStateBody(name, raw);
+function parseState(raw: any): SkeletonState {
+  const st = parseStateBody(raw);
   if (raw["@_timeout"]) st.timeout = raw["@_timeout"];
   if (raw["@_model-expr"]) st.modelExpr = raw["@_model-expr"];
+  const contract = cdataText(raw.contract);
+  if (contract) st.contract = contract;
+  const reads = parseKeyList(raw["@_reads"]);
+  if (reads.length) st.reads = reads;
+  const writes = parseKeyList(raw["@_writes"]);
+  if (writes.length) st.writes = writes;
   return st;
 }
 
-function parseStateBody(name: string, raw: any): SkeletonState {
+/** Parse a `reads`/`writes` attribute: comma- or whitespace-separated namespace keys (data./config.). */
+function parseKeyList(raw: any): string[] {
+  if (typeof raw !== "string") return [];
+  return raw.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+}
+
+/** Extract text from an element that may be a plain string or a CDATA-wrapped node. */
+function cdataText(node: any): string | undefined {
+  if (node == null) return undefined;
+  if (typeof node === "string") return node.trim() || undefined;
+  const t = node["#text"] ?? node["__cdata"];
+  return typeof t === "string" ? t.trim() || undefined : undefined;
+}
+
+/** Best-effort parse of <on> transitions — never throws on semantic gaps. A missing event/target
+ *  becomes "" so validateSkeleton flags it (invalid identifier / target does not exist), letting the
+ *  full error set accumulate in one pass instead of one parse-throw at a time. */
+function parseOnList(rawOn: any): Record<string, string | GuardedTransition[]> {
+  const on: Record<string, string | GuardedTransition[]> = {};
+  for (const o of rawOn || []) {
+    const event = o["@_event"] || "";
+    if (o["@_target"]) on[event] = o["@_target"];
+    else if (o.go) on[event] = parseBranches(o.go);
+    else on[event] = "";
+  }
+  return on;
+}
+
+function parseStateBody(raw: any): SkeletonState {
   const type = raw["@_type"];
 
   if (type === "wait") {
@@ -53,20 +99,10 @@ function parseStateBody(name: string, raw: any): SkeletonState {
     if (raw["@_command"]) st.waitCommand = raw["@_command"];
     if (raw["@_port"]) {
       const n = parseInt(raw["@_port"], 10);
-      if (!Number.isFinite(n)) throw new Error(`Wait state '${name}' port must be a number`);
-      st.waitPort = n;
+      if (Number.isFinite(n)) st.waitPort = n; // bad number → left unset → validateSkeleton flags it
     }
     if (raw["@_poll-interval"]) st.waitPollInterval = raw["@_poll-interval"];
-    if (raw.on) {
-      st.on = {};
-      for (const on of raw.on) {
-        const event = on["@_event"];
-        if (!event) throw new Error(`<on> missing event in state '${name}'`);
-        if (on["@_target"]) st.on[event] = on["@_target"];
-        else if (on.go) st.on[event] = parseBranches(on.go, name);
-        else throw new Error(`<on event="${event}"> in state '${name}' has no target`);
-      }
-    }
+    if (raw.on) st.on = parseOnList(raw.on);
     return st;
   }
 
@@ -76,92 +112,56 @@ function parseStateBody(name: string, raw: any): SkeletonState {
       callSkeleton: raw["@_skeleton"],
     };
     if (raw["@_args"]) skState.callArgsExpr = raw["@_args"];
-    // Call states still have `on` transitions for success/error — fall through to standard on parsing
-    if (raw.on) {
-      skState.on = {};
-      for (const on of raw.on) {
-        const event = on["@_event"];
-        if (!event) throw new Error(`<on> missing event in state '${name}'`);
-        if (on["@_target"]) skState.on[event] = on["@_target"];
-        else if (on.go) skState.on[event] = parseBranches(on.go, name);
-        else throw new Error(`<on event="${event}"> in state '${name}' has no target or guarded <go> children`);
-      }
-    }
+    if (raw.on) skState.on = parseOnList(raw.on);
     return skState;
   }
 
+  // parallel / loop: routing is unified with normal states — the next state after fan-out / iteration
+  // is named by <on event="DONE" target="X"/> (NOT a join= attribute). Captured into join.
   if (type === "parallel") {
     const st: SkeletonState = {
       type: "parallel",
       overExpr: raw["@_over"],
       parallelBranch: raw["@_branch"],
-      parallelJoin: raw["@_join"],
     };
     if (raw["@_concurrency"] !== undefined) {
       const n = parseInt(raw["@_concurrency"], 10);
-      if (!Number.isFinite(n)) throw new Error(`Parallel state '${name}' concurrency must be a number`);
-      st.concurrency = n;
+      if (Number.isFinite(n)) st.concurrency = n;
     }
-    if (raw.on) {
-      st.on = {};
-      for (const on of raw.on) {
-        const event = on["@_event"];
-        if (event !== "TIMEOUT") throw new Error(`Parallel state '${name}': only TIMEOUT event allowed in <on>`);
-        if (on["@_target"]) st.on[event] = on["@_target"];
-        else throw new Error(`<on event="${event}"> in state '${name}' has no target`);
-      }
-    }
+    parseJoinOn(raw.on, st);
     return st;
   }
 
   if (type === "loop") {
-    const steps = (raw.step || []).map((s: any) => {
-      const sn = s["@_state"];
-      if (!sn) throw new Error(`Loop state '${name}' <step> missing 'state' attribute`);
-      return sn;
-    });
     const st: SkeletonState = {
       type: "loop",
-      loopSteps: steps,
-      parallelJoin: raw["@_join"],
+      loopSteps: (raw.step || []).map((s: any) => s["@_state"] || ""),
     };
     if (raw["@_max"] !== undefined) {
       const n = parseInt(raw["@_max"], 10);
-      if (!Number.isFinite(n)) throw new Error(`Loop state '${name}' max must be a number`);
-      st.maxIterations = n;
+      if (Number.isFinite(n)) st.maxIterations = n;
     }
     if (raw["@_exit"]) st.exitExpr = raw["@_exit"];
-    if (raw.on) {
-      st.on = {};
-      for (const on of raw.on) {
-        const event = on["@_event"];
-        if (event !== "TIMEOUT") throw new Error(`Loop state '${name}': only TIMEOUT event allowed in <on>`);
-        if (on["@_target"]) st.on[event] = on["@_target"];
-        else throw new Error(`<on event="${event}"> in state '${name}' has no target`);
-      }
-    }
+    parseJoinOn(raw.on, st);
     return st;
   }
 
   if (type === "switch") {
-    return { type: "switch", branches: parseBranches(raw.go || [], name) };
+    return { type: "switch", branches: parseBranches(raw.go || []) };
   }
 
   if (type === "check") {
-    // Desugar: check expr="X" with TRUE/FALSE events → switch with 2 branches.
-    const expr = raw["@_expr"];
-    if (!expr) throw new Error(`Check state '${name}' missing expr attribute`);
+    // Desugar: check expr="X" with TRUE/FALSE events → switch with 2 branches. Best-effort: gaps
+    // become "" so validateSkeleton flags them rather than aborting the whole parse.
+    const expr = raw["@_expr"] || "";
     const branches: GuardedTransition[] = [];
-    let falseTarget: string | undefined;
+    let falseTarget = "";
     for (const on of raw.on || []) {
-      const event = on["@_event"];
-      const target = on["@_target"];
-      if (!event || !target) throw new Error(`Check state '${name}' <on> needs event + target`);
+      const event = on["@_event"] || "";
+      const target = on["@_target"] || "";
       if (event === "TRUE") branches.push({ target, guard: `expr:${expr}` });
       else if (event === "FALSE") falseTarget = target;
-      else throw new Error(`Check state '${name}': only TRUE/FALSE events allowed, got '${event}'`);
     }
-    if (!falseTarget) throw new Error(`Check state '${name}' missing <on event="FALSE">`);
     branches.push({ target: falseTarget });
     return { type: "switch", branches };
   }
@@ -176,45 +176,35 @@ function parseStateBody(name: string, raw: any): SkeletonState {
   } else if (type === "interactive") {
     skState.artifacts = extractArtifactPaths(raw.artifacts, "edit");
   } else if (type === "set") {
-    skState.dataAssignments = (raw.data || []).map((d: any): DataAssignment => {
-      const key = d["@_key"];
-      const value = d["@_value"];
-      if (!key || value === undefined) throw new Error(`Set state '${name}' <data> needs key and value attributes`);
-      return { key, value };
-    });
+    skState.dataAssignments = (raw.data || []).map((d: any): DataAssignment => ({
+      key: d["@_key"] || "",
+      value: d["@_value"] !== undefined ? d["@_value"] : "",
+    }));
   }
 
-  if (raw.on) {
-    skState.on = {};
-    for (const on of raw.on) {
-      const event = on["@_event"];
-      if (!event) throw new Error(`<on> missing event in state '${name}'`);
-      if (on["@_target"]) {
-        skState.on[event] = on["@_target"];
-      } else if (on.go) {
-        skState.on[event] = parseBranches(on.go, name);
-      } else {
-        throw new Error(`<on event="${event}"> in state '${name}' has no target or guarded <go> children`);
-      }
-    }
-  }
+  if (raw.on) skState.on = parseOnList(raw.on);
 
   return skState;
 }
 
-function parseBranches(gos: any[], stateName: string): GuardedTransition[] {
-  return gos.map((g: any): GuardedTransition => {
-    const target = g["@_target"];
-    if (!target) throw new Error(`<go> in state '${stateName}' missing target`);
-    const gt: GuardedTransition = { target };
+/** parallel / loop: capture <on event="DONE" target="X"/> as the join, other events (TIMEOUT) into on. */
+function parseJoinOn(rawOn: any, st: SkeletonState): void {
+  st.on = {};
+  for (const o of rawOn || []) {
+    const event = o["@_event"] || "";
+    const target = o["@_target"] || "";
+    if (event === "DONE") st.join = target;
+    else st.on[event] = target;
+  }
+}
 
+function parseBranches(gos: any[]): GuardedTransition[] {
+  return gos.map((g: any): GuardedTransition => {
+    const gt: GuardedTransition = { target: g["@_target"] || "" };
     const retryKey = g["@_retries-key"];
     const retryMax = g["@_retries-max"];
     const expr = g["@_guard"];
-
-    if (expr && (retryKey || retryMax)) {
-      throw new Error(`<go> in state '${stateName}': cannot mix 'guard' with 'retries-key/-max'`);
-    }
+    // Best-effort: prefer retries if both are present; validateSkeleton checks guard validity.
     if (retryKey && retryMax) gt.guard = `retries:${retryKey}<${retryMax}`;
     else if (expr) gt.guard = `expr:${expr}`;
     return gt;
@@ -231,10 +221,23 @@ function extractArtifactPaths(node: any, tag: "show" | "edit"): string[] | undef
 
 export function serializeSkeletonXML(skeleton: Skeleton): string {
   const lines: string[] = [];
-  const version = skeleton.formatVersion || "0.1";
+  const version = skeleton.formatVersion || "0.5";
   lines.push(`<skeleton id="${esc(skeleton.id)}" initial="${esc(skeleton.initial)}" format-version="${esc(version)}">`);
   lines.push(`  <description>${esc(skeleton.description)}</description>`);
   lines.push(`  <usage>${esc(skeleton.usage)}</usage>`);
+  if (skeleton.inputs?.length) {
+    lines.push(`  <inputs>`);
+    for (const a of skeleton.inputs) {
+      const attrs = [`name="${esc(a.name)}"`];
+      if (a.positional) attrs.push(`positional="true"`);
+      if (a.flag) attrs.push(`flag="${esc(a.flag)}"`);
+      if (a.type) attrs.push(`type="${a.type}"`);
+      if (a.default !== undefined) attrs.push(`default="${esc(a.default)}"`);
+      if (a.required) attrs.push(`required="true"`);
+      lines.push(`    <arg ${attrs.join(" ")} />`);
+    }
+    lines.push(`  </inputs>`);
+  }
 
   for (const [name, state] of Object.entries(skeleton.states)) {
     lines.push("");
@@ -246,6 +249,8 @@ export function serializeSkeletonXML(skeleton: Skeleton): string {
     const stateAttrs = [`name="${esc(name)}"`, `type="${state.type}"`];
     if (state.timeout) stateAttrs.push(`timeout="${esc(state.timeout)}"`);
     if (state.modelExpr) stateAttrs.push(`model-expr="${esc(state.modelExpr)}"`);
+    if (state.reads?.length) stateAttrs.push(`reads="${esc(state.reads.join(", "))}"`);
+    if (state.writes?.length) stateAttrs.push(`writes="${esc(state.writes.join(", "))}"`);
     if (state.type === "approval" && state.autoEvent) stateAttrs.push(`auto-event="${esc(state.autoEvent)}"`);
     if (state.type === "wait") {
       if (state.waitMode) stateAttrs.push(`mode="${state.waitMode}"`);
@@ -256,14 +261,7 @@ export function serializeSkeletonXML(skeleton: Skeleton): string {
       if (state.waitPort !== undefined) stateAttrs.push(`port="${state.waitPort}"`);
       if (state.waitPollInterval) stateAttrs.push(`poll-interval="${esc(state.waitPollInterval)}"`);
       lines.push(`  <state ${stateAttrs.join(" ")}>`);
-      for (const [event, target] of Object.entries(state.on || {})) {
-        if (typeof target === "string") lines.push(`    <on event="${esc(event)}" target="${esc(target)}" />`);
-        else {
-          lines.push(`    <on event="${esc(event)}">`);
-          for (const gt of target) lines.push(`      ${emitGo(gt)}`);
-          lines.push(`    </on>`);
-        }
-      }
+      lines.push(...emitOnTransitions(state.on));
       lines.push(`  </state>`);
       continue;
     }
@@ -272,14 +270,7 @@ export function serializeSkeletonXML(skeleton: Skeleton): string {
       if (state.callSkeleton) stateAttrs.push(`skeleton="${esc(state.callSkeleton)}"`);
       if (state.callArgsExpr) stateAttrs.push(`args="${esc(state.callArgsExpr)}"`);
       lines.push(`  <state ${stateAttrs.join(" ")}>`);
-      for (const [event, target] of Object.entries(state.on || {})) {
-        if (typeof target === "string") lines.push(`    <on event="${esc(event)}" target="${esc(target)}" />`);
-        else {
-          lines.push(`    <on event="${esc(event)}">`);
-          for (const gt of target) lines.push(`      ${emitGo(gt)}`);
-          lines.push(`    </on>`);
-        }
-      }
+      lines.push(...emitOnTransitions(state.on));
       lines.push(`  </state>`);
       continue;
     }
@@ -287,32 +278,26 @@ export function serializeSkeletonXML(skeleton: Skeleton): string {
     if (state.type === "parallel") {
       if (state.overExpr) stateAttrs.push(`over="${esc(state.overExpr)}"`);
       if (state.parallelBranch) stateAttrs.push(`branch="${esc(state.parallelBranch)}"`);
-      if (state.parallelJoin) stateAttrs.push(`join="${esc(state.parallelJoin)}"`);
       if (state.concurrency !== undefined) stateAttrs.push(`concurrency="${state.concurrency}"`);
-      if (state.on && Object.keys(state.on).length) {
-        lines.push(`  <state ${stateAttrs.join(" ")}>`);
-        for (const [event, target] of Object.entries(state.on)) {
-          if (typeof target === "string") lines.push(`    <on event="${esc(event)}" target="${esc(target)}" />`);
-        }
-        lines.push(`  </state>`);
-      } else {
-        lines.push(`  <state ${stateAttrs.join(" ")} />`);
-      }
+      lines.push(`  <state ${stateAttrs.join(" ")}>`);
+      if (state.join) lines.push(`    <on event="DONE" target="${esc(state.join)}" />`);
+      lines.push(...emitOnTransitions(state.on));
+      lines.push(`  </state>`);
       continue;
     }
     if (state.type === "loop") {
-      if (state.parallelJoin) stateAttrs.push(`join="${esc(state.parallelJoin)}"`);
       if (state.maxIterations !== undefined) stateAttrs.push(`max="${state.maxIterations}"`);
       if (state.exitExpr) stateAttrs.push(`exit="${esc(state.exitExpr)}"`);
       lines.push(`  <state ${stateAttrs.join(" ")}>`);
       for (const s of state.loopSteps || []) lines.push(`    <step state="${esc(s)}" />`);
-      for (const [event, target] of Object.entries(state.on || {})) {
-        if (typeof target === "string") lines.push(`    <on event="${esc(event)}" target="${esc(target)}" />`);
-      }
+      if (state.join) lines.push(`    <on event="DONE" target="${esc(state.join)}" />`);
+      lines.push(...emitOnTransitions(state.on));
       lines.push(`  </state>`);
       continue;
     }
     lines.push(`  <state ${stateAttrs.join(" ")}>`);
+
+    if (state.contract?.trim()) lines.push(`    <contract>${cdata(state.contract.trim())}</contract>`);
 
     if (state.type === "switch" && state.branches) {
       for (const gt of state.branches) lines.push(`    ${emitGo(gt)}`);
@@ -331,20 +316,24 @@ export function serializeSkeletonXML(skeleton: Skeleton): string {
       }
     }
 
-    for (const [event, target] of Object.entries(state.on || {})) {
-      if (typeof target === "string") {
-        lines.push(`    <on event="${esc(event)}" target="${esc(target)}" />`);
-      } else {
-        lines.push(`    <on event="${esc(event)}">`);
-        for (const gt of target) lines.push(`      ${emitGo(gt)}`);
-        lines.push(`    </on>`);
-      }
-    }
+    lines.push(...emitOnTransitions(state.on));
     lines.push(`  </state>`);
   }
 
   lines.push("</skeleton>");
   return lines.join("\n") + "\n";
+}
+
+/** Serialize a state's `<on>` transitions (string target → self-closing; guarded array → `<go>` children). */
+function emitOnTransitions(on?: Record<string, string | GuardedTransition[]>): string[] {
+  const out: string[] = [];
+  for (const [event, target] of Object.entries(on || {})) {
+    if (typeof target === "string") { out.push(`    <on event="${esc(event)}" target="${esc(target)}" />`); continue; }
+    out.push(`    <on event="${esc(event)}">`);
+    for (const gt of target) out.push(`      ${emitGo(gt)}`);
+    out.push(`    </on>`);
+  }
+  return out;
 }
 
 function emitGo(gt: GuardedTransition): string {
@@ -363,4 +352,10 @@ function esc(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+/** Wrap free-form markdown (spec / contract) in CDATA so it can contain |, backticks, <, >, & verbatim.
+ *  Splits any literal `]]>` so it can't terminate the section early. */
+function cdata(s: string): string {
+  return `<![CDATA[${s.replace(/]]>/g, "]]]]><![CDATA[>")}]]>`;
 }

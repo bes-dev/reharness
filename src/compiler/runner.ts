@@ -1,15 +1,7 @@
 import { createInterface } from "readline";
 import { buildGeneratePipeline } from "./generate.js";
 import type { ApprovalHandler } from "../runtime/types.js";
-
-const ansi = {
-  dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
-  bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
-  green: (s: string) => `\x1b[32m${s}\x1b[0m`,
-  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
-  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
-  cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
-};
+import { ansi, emit } from "../term.js";
 
 export interface RunGenerateOptions {
   cwd: string;
@@ -38,14 +30,6 @@ export async function runGenerate(opts: RunGenerateOptions): Promise<number> {
     console.log(`${ansi.red("✗ crashed:")} ${err.message}`);
     return 1;
   }
-}
-
-function emit(msg: string) {
-  const m = msg.match(/^── (\S+) ──$/);
-  if (m) { process.stdout.write(`\r\x1b[K${ansi.cyan("⠋")} ${ansi.bold(m[1])}\n`); return; }
-  if (!msg.trim()) return;
-  const c = msg[0] === "✓" ? ansi.green : msg[0] === "✗" ? ansi.red : msg[0] === "⚠" ? ansi.yellow : (s: string) => s;
-  console.log(`  ${c(msg)}`);
 }
 
 const terminalApprovalHandler: ApprovalHandler = async (cp) => {
