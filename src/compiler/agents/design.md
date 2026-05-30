@@ -38,7 +38,12 @@ The PRD is the source of intent: **every stage must serve something the PRD asks
 
 1. Read the PRD. Its **Behaviour** section is your stage outline; **Acceptance criteria** and **Scope** say what each stage must guarantee and what to leave out. Map input → processing → output.
 2. Use `research-findings.md` to choose realization (retries, debate, preflight…) — only what the PRD's goal needs.
-3. Maximize deterministic `code` stages. Use `agent` only where reasoning over unstructured data is required. **Every LLM call is its own `agent` state** — never a `code` state that calls an agent internally (codegen makes prompt files only for declared agent states; an embedded call throws at runtime).
+3. **Amortize reasoning into code — make a stage `code`, not `agent`, when BOTH hold:**
+   - **(a) its input is structured** — every producer it reads (its graph ancestors) is a `code`/`set` stage, so the bytes have a schema your code authored (JSON, a fixed file format). Input coming from an `agent` (prose, a model's free-text answer, a raw diff, OCR) is UNstructured.
+   - **(b) its contract is a mechanical function over that structure** — parse a known schema then transform: reformat, filter, sort, dedup, tally, arithmetic, extract-a-field, validate-a-schema, build a report from given fields. No world-knowledge or judgment.
+
+   If either fails, it must be an `agent`. (a) fails → no schema to parse deterministically. (b) fails → the task needs judgment (summarize prose, rate quality, classify ambiguous text, cluster "is this the same issue?", decide severity). **Demoting a judgment task to code is the worst error** — e.g. regex-extracting an invoice's vendor name scores ~20% where an LLM scores ~80%; the input looked parseable but the task was semantic. When unsure whether (b) holds, keep it an `agent`: a correct slow stage beats a fast wrong one.
+   The deterministic core costs zero tokens forever; spend an `agent` only where reasoning is irreducible. **Every LLM call is its own `agent` state** — never a `code` state that calls an agent internally (codegen makes prompt files only for declared agent states; an embedded call throws at runtime).
 4. N parallel LLM calls over a list → `parallel` with `branch` = an `agent` state. Iterative refinement → `loop` with a `step` = an `agent`. Don't hide agent calls inside code orchestrators.
 5. **Agents read/write FILES; guards/switches read `ctx.data`.** So when a later `switch`/`check` must branch on an agent's output, insert a `code` state between them that reads the agent's output file and sets `ctx.data` (the bridge). E.g. `review (agent) → tally (code: reads review's output → sets data.has_blocking) → switch on data.has_blocking`.
 
