@@ -97,7 +97,8 @@ nondeterminism (outputs vary run to run, even at temperature $0$), cost (tokens
 scale with execution volume), and unauditability (no fixed artifact to inspect).
 
 \reharness{} takes the opposite stance, shared with a small body of recent work
-on treating ``LLM as compiler, not interpreter'': intelligence is spent
+on treating ``LLM as compiler, not interpreter''~\cite{dspy,llmp,compiledai}:
+intelligence is spent
 \emph{once}, at compile time, to produce a deterministic artifact that is then
 executed by conventional software. Where intelligence is genuinely irreducible at
 run time---a judgement over unstructured input---it is isolated into an
@@ -133,8 +134,10 @@ The runtime (\code{src/runtime/fsm.ts}) executes a compiled pipeline. Formally i
 is a \textbf{deterministic hierarchical Moore-action transducer driven by
 run-to-completion (RTC) steps}: a deterministic finite control with a recursion
 stack for composite states (a restricted pushdown structure), where each state's
-action is a self-contained computation that emits exactly one event. It is a
-deliberate restriction of the UML/Harel hierarchical state machine (HSM)---the same
+action is a self-contained computation that emits exactly one event
+(the Moore property~\cite{moore}). It is a
+deliberate restriction of the Harel statechart~\cite{harel} / UML run-to-completion
+hierarchical state machine (HSM)~\cite{uml,scxml}---the same
 control topology, minus the machinery whose nondeterminism we reject
 (\S\ref{sec:restrictions}).
 
@@ -408,7 +411,7 @@ Data moves through three channels:
 \subsection{The polyhedral instance-wise model}
 
 The workspace model is the \emph{polyhedral iteration space} (Feautrier's
-instance-wise array data-flow analysis): a stage executes once per point in its
+instance-wise array data-flow analysis~\cite{feautrier}): a stage executes once per point in its
 iteration space, and a read sees the producer instances on its shared-scope prefix,
 collected over the axes it has exited.
 
@@ -491,14 +494,18 @@ trivial (a reachable set).
 
 \begin{definition}[Monotone data-flow engine]\label{def:kamullman}
 $\mathrm{solveMonotoneSets}$ is the \textbf{Kam--Ullman monotone data-flow
-framework} specialised to the lattice $L = (\powerset(K), \subseteq)$ of subsets of
+framework}~\cite{kamullman}, in the lineage of Kildall's unified
+lattice formulation of global program optimization~\cite{kildall}, specialised
+to the lattice $L = (\powerset(K), \subseteq)$ of subsets of
 a finite key set $K$, with a gen-only forward transfer function
 \[
   \mathrm{OUT}[n] = \mathrm{gen}(n) \cup \mathrm{IN}[n], \qquad
   \mathrm{IN}[n] = \!\!\bigmeet_{p \in \mathrm{pred}(n)}\!\! \mathrm{OUT}[p],
 \]
 iterated to a fixpoint, where $\meet$ is set intersection
-(\textbf{must} analysis) or set union (\textbf{may} analysis).
+(\textbf{must} analysis) or set union (\textbf{may} analysis). Reaching
+definitions, live variables, and definite assignment are the classical
+instances~\cite{dragon,nielson}.
 \end{definition}
 
 \begin{proposition}[Convergence]\label{prop:converge}
@@ -693,7 +700,7 @@ A stage $n$ is \emph{demotable} to \state{code} iff both:
         extract a field, validate a schema). It is \emph{not} a judgement
         (summarize, rate, classify ambiguous text, cluster ``same issue?'',
         assign severity). \emph{This condition is not statically decidable}---by
-        Rice's theorem, the semantic property ``this specification is a pure
+        Rice's theorem~\cite{rice}, the semantic property ``this specification is a pure
         function over the structure'' is undecidable---so it is a judgement, which
         by Principle~\ref{prin:decisions} belongs to the design agent, not to a
         static rule.
@@ -721,10 +728,10 @@ reached from the agent-first side.
 \section{Relation to Prior Work}
 % ===========================================================================
 
-\paragraph{LLM-as-compiler.} DSPy compiles declarative LLM pipelines into optimized
-prompts/weights; LLM+P translates natural language into a formal planning
-specification (PDDL) delegated to a classical solver; ``Compiled AI'' (Trooskens et
-al., 2026) generates deterministic code at a compilation phase and executes it with
+\paragraph{LLM-as-compiler.} DSPy~\cite{dspy} compiles declarative LLM pipelines
+into optimized prompts/weights; LLM+P~\cite{llmp} translates natural language into a
+formal planning specification (PDDL~\cite{pddl}) delegated to a classical solver;
+``Compiled AI''~\cite{compiledai} generates deterministic code at a compilation phase and executes it with
 zero run-time model calls, with a four-stage generation-and-validation pipeline and
 a template/module/prompt-block component library. \reharness{} shares the
 compile-once stance but differs in three ways: (i) it compiles \emph{orchestration}
@@ -736,15 +743,19 @@ Def.~\ref{def:demote}); and (iii) the human approves \emph{intent} (the PRD), no
 configuration.
 
 \paragraph{State machines.} The runtime is a named restriction of Harel
-\emph{Statecharts} and \emph{UML} run-to-completion semantics, dropping orthogonal
-regions and Mealy edge-actions (\S\ref{sec:restrictions}). The \state{parallel}
-construct is a fork--join task model, not orthogonal-region concurrency.
+\emph{Statecharts}~\cite{harel} and \emph{UML} run-to-completion
+semantics~\cite{uml,scxml,samek}, dropping orthogonal regions and Mealy
+edge-actions (\S\ref{sec:restrictions}); states carry Moore-style
+actions~\cite{moore}. The \state{parallel} construct is a fork--join task model, not
+orthogonal-region concurrency.
 
 \paragraph{Program analysis.} The analyzer is the Kam--Ullman monotone data-flow
-framework (reaching definitions, live variables, and definite assignment are its
-classical instances) plus transitive-closure reachability; the data-flow/workspace
-model is the polyhedral iteration space (Feautrier's instance-wise array data-flow
-analysis).
+framework~\cite{kamullman,kildall} (reaching definitions, live variables, and
+definite assignment are its classical instances~\cite{dragon,nielson}) plus
+transitive-closure reachability; the data-flow/workspace model is the polyhedral
+iteration space (Feautrier's instance-wise array data-flow
+analysis~\cite{feautrier}). Undecidability of the semantic demotability condition
+(Def.~\ref{def:demote}) follows from Rice's theorem~\cite{rice}.
 
 % ===========================================================================
 \section{Limitations and Boundaries}\label{sec:limitations}
@@ -787,6 +798,74 @@ and the contract is mechanical}---let the same pipeline span the full spectrum f
 purely generative (all agents) to purely deterministic (zero agents, the Compiled-AI
 limit). The design's discipline is to keep that skeleton deterministic and
 analyzable, and to spend nondeterministic intelligence only where it is irreducible.
+
+% ===========================================================================
+\begin{thebibliography}{99}
+% ===========================================================================
+
+\bibitem{compiledai} G.~Trooskens, A.~Karlsberg, A.~Sharma, L.~De Brouwer,
+M.~Van Puyvelde, M.~Young, J.~Thickstun, G.~Alterovitz, and W.~A.~De Brouwer.
+\emph{Compiled AI: Deterministic Code Generation for LLM-Based Workflow
+Automation}. arXiv:2604.05150, 2026.
+
+\bibitem{dspy} O.~Khattab et al.
+\emph{DSPy: Compiling Declarative Language Model Calls into Self-Improving
+Pipelines}. arXiv:2310.03714, 2023.
+
+\bibitem{llmp} B.~Liu, Y.~Jiang, X.~Zhang, Q.~Liu, S.~Zhang, J.~Biswas, and
+P.~Stone. \emph{LLM+P: Empowering Large Language Models with Optimal Planning
+Proficiency}. arXiv:2304.11477, 2023.
+
+\bibitem{pddl} D.~McDermott et al.
+\emph{PDDL---The Planning Domain Definition Language}.
+Tech.\ Report CVC TR-98-003, Yale Center for Computational Vision and Control, 1998.
+
+\bibitem{harel} D.~Harel.
+\emph{Statecharts: A Visual Formalism for Complex Systems}.
+Science of Computer Programming, 8(3):231--274, 1987.
+
+\bibitem{uml} Object Management Group.
+\emph{OMG Unified Modeling Language (OMG UML), Version 2.5.1}.
+OMG, 2017. (State Machines; run-to-completion semantics.)
+
+\bibitem{scxml} World Wide Web Consortium.
+\emph{State Chart XML (SCXML): State Machine Notation for Control Abstraction}.
+W3C Recommendation, 2015.
+
+\bibitem{samek} M.~Samek.
+\emph{Practical UML Statecharts in C/C++: Event-Driven Programming for Embedded
+Systems}. 2nd ed., Newnes, 2008.
+
+\bibitem{moore} E.~F.~Moore.
+\emph{Gedanken-Experiments on Sequential Machines}.
+In \emph{Automata Studies}, Annals of Mathematics Studies 34, pp.~129--153,
+Princeton University Press, 1956.
+
+\bibitem{kamullman} J.~B.~Kam and J.~D.~Ullman.
+\emph{Monotone Data Flow Analysis Frameworks}.
+Acta Informatica, 7(3):305--317, 1977.
+
+\bibitem{kildall} G.~A.~Kildall.
+\emph{A Unified Approach to Global Program Optimization}.
+In \emph{Proc.\ 1st ACM SIGACT-SIGPLAN Symposium on Principles of Programming
+Languages (POPL)}, pp.~194--206, 1973.
+
+\bibitem{dragon} A.~V.~Aho, M.~S.~Lam, R.~Sethi, and J.~D.~Ullman.
+\emph{Compilers: Principles, Techniques, and Tools}. 2nd ed., Addison-Wesley, 2006.
+(Ch.~9, data-flow analysis.)
+
+\bibitem{nielson} F.~Nielson, H.~R.~Nielson, and C.~Hankin.
+\emph{Principles of Program Analysis}. Springer, 1999.
+
+\bibitem{feautrier} P.~Feautrier.
+\emph{Dataflow Analysis of Array and Scalar References}.
+International Journal of Parallel Programming, 20(1):23--53, 1991.
+
+\bibitem{rice} H.~G.~Rice.
+\emph{Classes of Recursively Enumerable Sets and Their Decision Problems}.
+Transactions of the American Mathematical Society, 74(2):358--366, 1953.
+
+\end{thebibliography}
 
 \appendix
 \section{Notation}
