@@ -1,0 +1,811 @@
+\documentclass[11pt]{article}
+
+% ---------------------------------------------------------------------------
+%  reharness: A Reasoning Compiler for AI Workflows
+%  Technical / scientific documentation of the runtime and compiler (v0.25.0).
+%  Build:  pdflatex reharness.tex  (twice, for cross-references)
+% ---------------------------------------------------------------------------
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true,linkcolor=blue!55!black,citecolor=green!45!black,urlcolor=blue!55!black}
+
+% ---- theorem environments -------------------------------------------------
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{principle}[theorem]{Principle}
+\newtheorem{invariant}[theorem]{Invariant}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+% ---- listings -------------------------------------------------------------
+\definecolor{codebg}{gray}{0.96}
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  frame=single, rulecolor=\color{gray!40},
+  breaklines=true, columns=fullflexible,
+  keepspaces=true, showstringspaces=false,
+  xleftmargin=4pt, xrightmargin=4pt,
+}
+
+% ---- shorthands -----------------------------------------------------------
+\newcommand{\reharness}{\textsc{reharness}}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\state}[1]{\textsf{#1}}
+\newcommand{\transition}{\ensuremath{\delta}}
+\newcommand{\Nat}{\mathbb{N}}
+\newcommand{\given}{\,\vert\,}
+\newcommand{\powerset}{\mathcal{P}}
+\newcommand{\meet}{\sqcap}
+\newcommand{\joinop}{\sqcup}
+% Indexed meet: \bigsqcap is not in base LaTeX; use the standard big operator that
+% matches our concrete lattice (intersection = must, union = may).
+\newcommand{\bigmeet}{\bigcap}
+
+\title{\reharness: A Reasoning Compiler for AI Workflows\\[4pt]
+\large Formal description of the runtime and compiler (v0.25.0)}
+\author{reharness project}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\reharness{} compiles a natural-language request into a runnable, finite-state
+AI workflow. It is a \emph{reasoning compiler}: the nondeterministic intelligence
+of large language models (LLMs) is confined to a one-time compilation phase and to
+clearly delimited \emph{agent leaves} of an otherwise fully deterministic execution
+skeleton. The system has two layers, both finite-state machines (FSMs). The
+\emph{runtime} executes a compiled FSM and is a named restriction of a standard,
+well-studied model: a \emph{deterministic hierarchical Moore-action transducer with
+run-to-completion semantics}. The \emph{compiler} turns a request into a single
+declarative artifact---a graph with per-node behavioural contracts---and lowers it
+to executable TypeScript through deterministic graph passes, validated by a static
+analyzer built on two textbook engines (transitive-closure reachability and the
+Kam--Ullman monotone data-flow framework). Inter-stage data flow is \emph{derived}
+from graph topology via a polyhedral instance-wise model rather than declared.
+We give the formal models, state and prove the determinism and termination
+guarantees, and present the compiler's design as a small set of principles from
+which the mechanical machinery is derived. We relate the system to prior work on
+LLM compilation (DSPy, LLM+P, ``Compiled AI''), statecharts, monotone data-flow
+analysis, and the polyhedral model.
+\end{abstract}
+
+\tableofcontents
+
+% ===========================================================================
+\section{Introduction}
+% ===========================================================================
+
+LLM-based agent frameworks typically invoke a model at \emph{every} step of a
+workflow, conflating two distinct concerns: \emph{deciding what to do} (which
+benefits from reasoning) and \emph{executing a well-specified procedure} (which
+does not). The conflation is the source of three well-documented problems:
+nondeterminism (outputs vary run to run, even at temperature $0$), cost (tokens
+scale with execution volume), and unauditability (no fixed artifact to inspect).
+
+\reharness{} takes the opposite stance, shared with a small body of recent work
+on treating ``LLM as compiler, not interpreter'': intelligence is spent
+\emph{once}, at compile time, to produce a deterministic artifact that is then
+executed by conventional software. Where intelligence is genuinely irreducible at
+run time---a judgement over unstructured input---it is isolated into an
+\emph{agent leaf}: a single LLM call that is one state of a deterministic FSM.
+
+\paragraph{Two layers.} The architecture is two finite-state machines:
+\begin{itemize}[nosep]
+  \item the \textbf{runtime} (\S\ref{sec:runtime}, \code{src/runtime/}): executes a
+        compiled FSM---states are agent/code/$\dots$ actions, transitions are typed
+        and guarded;
+  \item the \textbf{compiler} (\S\ref{sec:compiler}, \code{src/compiler/}): the
+        \code{/generate} meta-pipeline turns a request into a \code{skeleton.xml}
+        and lowers it to a runnable TypeScript pipeline; the analyzer in
+        \code{src/compiler/analysis/} statically validates it.
+\end{itemize}
+The compiler is itself a \reharness{} pipeline executed by the same runtime; the
+system is self-hosting.
+
+\paragraph{Design ethos.} Both layers are \emph{named restrictions of standard
+models}, not ad hoc constructions. The runtime is a restriction of the
+Harel/UML hierarchical state machine; the analyzer is a family of instances of two
+standard engines; the data-flow model is the polyhedral iteration space. The
+guiding engineering principle is \emph{simplify until it breaks determinism}: the
+codebase has repeatedly \emph{removed} machinery (declared data flow, review loops,
+cross-cutting spec blocks) when a seam cost more than the check it bought. This
+document records the resulting theory.
+
+% ===========================================================================
+\section{The Runtime}\label{sec:runtime}
+% ===========================================================================
+
+The runtime (\code{src/runtime/fsm.ts}) executes a compiled pipeline. Formally it
+is a \textbf{deterministic hierarchical Moore-action transducer driven by
+run-to-completion (RTC) steps}: a deterministic finite control with a recursion
+stack for composite states (a restricted pushdown structure), where each state's
+action is a self-contained computation that emits exactly one event. It is a
+deliberate restriction of the UML/Harel hierarchical state machine (HSM)---the same
+control topology, minus the machinery whose nondeterminism we reject
+(\S\ref{sec:restrictions}).
+
+\subsection{Syntax of a pipeline}
+
+\begin{definition}[Pipeline]\label{def:pipeline}
+A pipeline is a tuple $P = (Q, q_0, F, \tau, \delta_{\mathrm{on}}, G, \kappa)$ where
+\begin{itemize}[nosep]
+  \item $Q$ is a finite set of \emph{states} and $q_0 \in Q$ the \emph{initial} state;
+  \item $F \subseteq Q$ are \emph{final} states, each labelled \code{success} or \code{error};
+  \item $\tau : Q \to \{\state{agent}, \state{code}, \state{interactive}, \state{switch},
+        \state{set}, \state{parallel}, \state{loop}, \state{call}, \state{wait}, \state{final}\}$
+        assigns each state a \emph{type};
+  \item $\delta_{\mathrm{on}} : Q \times \Sigma \rightharpoonup (Q \times G)^{*}$ maps a state and an
+        \emph{event} $e \in \Sigma$ to an ordered list of guarded targets;
+  \item $G$ is the set of \emph{guards} (boolean expressions over the data store, \S\ref{sec:guards});
+  \item $\kappa$ assigns composite states their structural parameters (branch/step bodies, join target,
+        iteration bound, etc.).
+\end{itemize}
+\end{definition}
+
+States divide into \emph{active} states (\state{agent}, \state{code},
+\state{interactive}), whose semantics is an \emph{action}; \emph{control} states
+(\state{switch}, \state{set}); \emph{composite} states (\state{parallel},
+\state{loop}, \state{call}); the external-signal state \state{wait}; and
+\state{final} states.
+
+\subsection{Moore-action semantics and the run-to-completion step}
+
+\begin{definition}[Moore action]
+Each active state $q$ carries an \emph{entry action} $a_q$ that runs to completion
+and \emph{emits exactly one event} $e \in \Sigma$ equal to the \emph{outcome of its
+own computation}. The emitted event is not a function of an input symbol read
+mid-step (that would be a Mealy machine); it is the result of $a_q$.
+\end{definition}
+
+A configuration is a pair $(q, \sigma)$ where $q$ is the active state and $\sigma$
+is the \emph{data store} (an in-memory key/value map \code{ctx.data}, plus the
+read-only \code{config} and the per-stage workspace; \S\ref{sec:dataflow}). The
+runtime executes one RTC step at a time.
+
+\begin{definition}[RTC step]\label{def:rtc}
+A run-to-completion step from configuration $(q,\sigma)$ with $\tau(q)$ active:
+\begin{enumerate}[nosep]
+  \item run $a_q$ to completion, producing event $e$ and an updated store $\sigma'$;
+  \item compute the next state $q' = \transition(q, e, \sigma')$ (\S\ref{sec:delta});
+  \item the next step begins only after the current step has fully settled.
+\end{enumerate}
+There is no event queue, no preemption, and no interleaving: exactly one event
+exists per step, so the RTC requirement ``no internal concurrency within a step''
+holds trivially. \state{wait} states are the only source of externally-timed events.
+\end{definition}
+
+\subsection{The transition function}\label{sec:delta}
+
+\begin{definition}[Transition function]\label{def:delta}
+Given a state $q$, an emitted event $e$, and a store $\sigma$, let
+$\delta_{\mathrm{on}}(q,e) = \langle (t_1,g_1), \dots, (t_k,g_k)\rangle$ be the
+ordered guarded-target list. Then
+\[
+  \transition(q,e,\sigma) \;=\; t_{j}, \qquad
+  j = \min\{\, i \given g_i(\sigma) = \text{true} \,\},
+\]
+i.e.\ the target of the \emph{first} guard that holds in document order. If
+$\delta_{\mathrm{on}}(q,e)$ is undefined, or no $g_i$ holds, the runtime
+\emph{fails loud}: it halts with a diagnostic rather than stalling silently.
+\end{definition}
+
+\begin{definition}[Totality by completion]\label{def:total}
+A pipeline is \emph{total} if for every reachable configuration $(q,\sigma)$ and
+every event $e$ that $a_q$ can emit, $\transition(q,e,\sigma)$ is defined and some
+guard holds. Codegen and lint enforce structural conditions sufficient for
+totality (every emitted event has a transition; \state{switch} states have a
+default arm; an \state{error} final exists for the synthesized \code{ERROR} edge);
+where they cannot, $\transition$ fails loud (Def.~\ref{def:delta}), so the
+runtime never silently stalls. We treat ``fail loud'' itself as making $\transition$
+total into $Q \cup \{\bot\}$ with $\bot$ an observable error halt.
+\end{definition}
+
+\subsection{The guard language}\label{sec:guards}
+
+Guards $g \in G$ are drawn from a deliberately tiny, side-effect-free expression
+sublanguage, so that they are statically analyzable and cannot themselves introduce
+nondeterminism or arbitrary computation. The grammar admits: the root identifiers
+\code{config}, \code{data}, \code{retries} with member access; the comparison and
+boolean operators ${==}\ {!=}\ {<}\ {\le}\ {>}\ {\ge}\ \&\&\ \vert\vert\ !$ and the
+arithmetic operators ${+}\ {-}\ {*}\ {/}\ \%$; string/number/boolean/\code{null}
+literals; and array literals. It \emph{rejects} function calls, assignment, the
+ternary operator, increment/decrement, bitwise operators, and regular expressions.
+A retry guard has the special form $\code{retries:}k < N$ and reads a bounded retry
+counter $k$. The compiler lowers a guard to a pure TypeScript arrow-function body
+(root identifiers prefixed with the context object); the runtime never evaluates a
+guard as a string. Rejecting calls is also a safety property: guard text originates
+in LLM-authored XML and is embedded verbatim into generated code, so an admitted
+call would be a code-execution surface (\S\ref{sec:limitations}).
+
+\subsection{Hierarchy: composites as RTC sub-computations}
+
+Composite states run as nested RTC sub-computations with their own recursion frame
+and return a single completion to the parent; the parent transition treats the
+whole composite as one Moore action.
+
+\paragraph{\state{parallel} (fork--join).}
+A \state{parallel} state evaluates an expression \code{over} to an array
+$[x_0,\dots,x_{m-1}]$, runs a \emph{branch} body once per item (up to a concurrency
+cap), and after all branches settle transitions to its \code{join}. Agent branches
+run with \emph{real OS-process parallelism} (each spawns a separate \code{pi}
+process); pure-code branches run cooperatively on the single event loop. The join
+reads the per-branch results $\code{data.branches} = [\{i, x_i, \mathit{dir}_i,
+\mathit{ok}_i\}]$ as a barrier.
+
+\begin{invariant}[No shared writes in a branch]\label{inv:branch}
+A \state{parallel} branch must not write the shared store \code{ctx.data}.
+Branches communicate only through their isolated output directories; cross-branch
+data is read by the join after the barrier.
+\end{invariant}
+
+\paragraph{\state{loop} (bounded iteration).}
+A \state{loop} runs an ordered list of \emph{step} states once per iteration. It
+carries a mandatory hard bound \code{max} $\in \Nat$ and an optional early-exit
+predicate \code{exit}. The runtime maintains two distinct iteration-space
+quantities (\S\ref{sec:loopcounters}).
+
+\paragraph{\state{call} (sub-machine).}
+A \state{call} invokes another compiled pipeline as a sub-pipeline and transitions
+by its terminal status (\code{success}/\code{error}).
+
+\subsection{Determinism}
+
+\begin{theorem}[Determinism]\label{thm:determinism}
+Fix a pipeline $P$ and the outputs of all agent leaves. Then the observable result
+of executing $P$---the sequence of states visited, the final store, and the set of
+workspace files written---is a deterministic function of the initial store, up to
+the commutative merge of \state{parallel} branch outputs.
+\end{theorem}
+
+\begin{proof}[Proof sketch]
+We show every source of choice is resolved deterministically.
+(i) Within a step, $a_q$ is run to completion and emits a single event
+(Def.~\ref{def:rtc}); the only nondeterminism inside $a_q$ is the agent leaf, which
+is fixed by hypothesis. (ii) $\transition$ is a function, not a relation: at most
+one transition fires per $(q,e)$ because guards are scanned in document order and
+the \emph{first} true guard wins (Def.~\ref{def:delta}); there is no
+``highest-priority'' ambiguity and no simultaneously-enabled race. (iii) Composites
+return a single completion, so the parent sees one Moore action. (iv) For
+\state{parallel}: branches cannot write shared \code{ctx.data}
+(Inv.~\ref{inv:branch}) and the join is a barrier, so the only order-dependence is
+the order in which branch outputs are merged; since each branch writes a disjoint,
+index-addressed output directory (\S\ref{sec:dataflow}), the merge is commutative
+and the observable result is independent of completion order. Composing
+(i)--(iv) over the RTC step sequence yields a deterministic transducer up to that
+commutative merge.
+\end{proof}
+
+\begin{remark}
+Theorem~\ref{thm:determinism} is the design's central contract: the FSM is the
+\emph{deterministic skeleton} around nondeterministic agent leaves. ``Compiled AI''
+in the sense of Trooskens et al.\ pushes the leaves to zero (no run-time LLM); a
+\reharness{} pipeline keeps leaves where reasoning is irreducible but keeps the
+\emph{harness} around them deterministic. The fully-deterministic case
+(zero agent states) is a reachable point of the design, not a separate mode
+(\S\ref{sec:amortization}).
+\end{remark}
+
+\subsection{Termination}
+
+\begin{invariant}[Loops are bounded]\label{inv:max}
+Every \state{loop} state declares a hard bound $\code{max} \in \Nat$, $\code{max}
+\ge 1$ (enforced by lint, \S\ref{sec:lint}). The early-exit predicate \code{exit}
+is an optional refinement, never a substitute for the bound.
+\end{invariant}
+
+\begin{theorem}[Termination]\label{thm:termination}
+Every execution of a pipeline $P$ in which each agent leaf terminates halts in a
+finite number of RTC steps.
+\end{theorem}
+
+\begin{proof}[Proof sketch]
+Define a well-founded rank on configurations. A \state{loop} contributes a counter
+bounded above by its \code{max} (Inv.~\ref{inv:max}); it strictly increases each
+iteration and forces exit at \code{max}, so a loop performs at most $\code{max}$
+iterations. A \state{parallel} performs $m = |\code{over}|$ branch executions, $m$
+finite. A \state{call} recurses into a strictly smaller sub-pipeline (no cyclic
+call graph by construction). Top-level cycles in the control graph are admissible
+only when gated by a \code{retries} counter, which is bounded by its
+\code{retries-max} (a retry edge is the only way to re-enter an earlier state, and
+the counter is monotone). Thus every back-edge is bounded by a static counter, and
+the lexicographic product of these counters is a well-founded measure that strictly
+decreases along every step that could otherwise recur. Finitely many non-recurring
+steps plus a well-founded measure on recurring ones gives finiteness, provided each
+$a_q$ (in particular each agent leaf) terminates.
+\end{proof}
+
+\subsection{Loop counters: coordinate versus cardinality}\label{sec:loopcounters}
+
+A subtle but instructive point. A loop exposes two \emph{categorically distinct}
+quantities to the data store, and conflating them is a latent off-by-one bug.
+
+\begin{definition}[Loop coordinate and cardinality]
+For a loop with iterations indexed $0,1,\dots$:
+\begin{itemize}[nosep]
+  \item \code{data.iteration} is the \textbf{coordinate}: the $0$-based index of the
+        \emph{current} iteration. It is a component of the instance vector
+        (\S\ref{sec:dataflow}), valid \emph{inside} a step. The early-exit
+        predicate \code{exit} sees it as the index of the iteration that just ran.
+  \item \code{data.iterations} is the \textbf{cardinality}: the number of iterations
+        that ran. It is the loop's return value, available \emph{after} the loop.
+\end{itemize}
+\end{definition}
+
+The distinction mirrors the difference between an array index $i$ and the array
+length $|A|$. ``How many rounds ran'' is the cardinality \code{data.iterations}; it
+must never be computed as $\code{data.iteration}+1$, and \code{data.iteration} must
+not be read after the loop. The runtime restores the coordinate (not the
+cardinality) into the shared scalar after each iteration so that a nested loop step
+that overwrote it does not corrupt the enclosing loop's view.
+
+\subsection{Restrictions relative to the full UML HSM}\label{sec:restrictions}
+
+\reharness{}'s runtime deliberately omits, from the full statechart model:
+\begin{itemize}[nosep]
+  \item \textbf{orthogonal regions with event broadcast}---replaced by
+        \state{parallel} fork--join with \emph{no} inter-branch signalling.
+        Broadcast is the principal source of statechart nondeterminism and
+        state-space blow-up;
+  \item \textbf{Mealy transition actions and entry/exit action chains}---all
+        behaviour lives in Moore-state actions; transitions are pure control;
+  \item \textbf{internal/local transitions, deep history, completion-event
+        races}---omitted.
+\end{itemize}
+What remains is exactly the analyzable core: a control graph, a recursion stack,
+and per-state actions emitting one event. This is what makes
+Theorems~\ref{thm:determinism} and \ref{thm:termination} hold by construction.
+
+% ===========================================================================
+\section{The Data-Flow and Workspace Model}\label{sec:dataflow}
+% ===========================================================================
+
+A central design decision: \emph{inter-stage data flow is derived from graph
+topology, never declared}. There is no \code{produces}/\code{consumes} attribute,
+no path syntax, no hand-built wiring. We motivate this historically, then give the
+polyhedral model that realizes it.
+
+\subsection{Why derived, not declared}
+
+Two earlier designs declared data flow---first file artifacts with
+\code{artifact=}/\code{requires=} paths, then a \code{produces}/\code{consumes}
+layer---and both \emph{relocated} the drift seam rather than removing it: path
+strings drift from reality, and declaration-vs-prose drift recurs at the
+fan-in of parallel stages. The realization:
+
+\begin{principle}[An edge is the data contract]\label{prin:edge}
+A graph edge $A \to B$ already \emph{is} the statement that $B$ may read $A$'s
+output. Therefore the author declares nothing about wiring; the compiler derives it
+from edges.
+\end{principle}
+
+\subsection{Three channels}
+
+Data moves through three channels:
+\begin{enumerate}[nosep]
+  \item \textbf{\code{config}}---the external CLI interface (\S\ref{sec:inputs}),
+        read-only, \emph{declared} (it has no internal producer to derive from);
+  \item \textbf{\code{ctx.data}}---in-memory scalars, written only by \state{code}
+        and \state{set} states, read by guards / \code{over} / \code{exit} /
+        \code{model-expr};
+  \item \textbf{per-stage workspace directories}---files; every stage gets its own
+        output directory and reads its visible producers' directories.
+\end{enumerate}
+
+\subsection{The polyhedral instance-wise model}
+
+The workspace model is the \emph{polyhedral iteration space} (Feautrier's
+instance-wise array data-flow analysis): a stage executes once per point in its
+iteration space, and a read sees the producer instances on its shared-scope prefix,
+collected over the axes it has exited.
+
+\begin{definition}[Enclosing scope / iteration vector]\label{def:scope}
+For a state $n$, its \emph{enclosing scope} $\mathrm{scope}(n) = \langle c_1,
+\dots, c_d \rangle$ is the chain of composite states enclosing it, outermost first
+(a \state{parallel} contributes a branch axis, a \state{loop} an iteration axis).
+A single \emph{instance} of $n$ is addressed by an \emph{instance vector}
+$\vec{\imath} = (i_1, \dots, i_d) \in \Nat^d$, one index per axis. Its output
+directory is
+\[
+  \mathrm{dir}(n, \vec{\imath}) \;=\; \langle\mathit{runDir}\rangle/\code{work}/n/i_1/i_2/\cdots/i_d .
+\]
+A top-level stage has $d = 0$ and a single directory.
+\end{definition}
+
+\begin{definition}[Visible producers]\label{def:visible}
+The producers visible to $n$ are its \emph{ancestor producers}: states of type
+\state{agent}/\state{code}/\state{interactive} backward-reachable from $n$ through
+the role-aware successor relation (\S\ref{sec:engines}). Each producer $p$ is
+classified by output cardinality relative to $n$. Let $\ell =
+|\mathrm{lcp}(\mathrm{scope}(n),\mathrm{scope}(p))|$ be the length of the longest
+common prefix of the two scopes. Then
+\[
+  p \in
+  \begin{cases}
+    \mathit{single}(n) & \text{if } |\mathrm{scope}(p)| = \ell, \\[2pt]
+    \mathit{list}(n)   & \text{otherwise.}
+  \end{cases}
+\]
+\end{definition}
+
+Intuitively: $p$ is \emph{single} iff every composite enclosing $p$ also encloses
+$n$ (so $p$'s instance is fixed by $n$'s surrounding context---linear chains,
+same-scope reads, loop-carried reads). $p$ is a \emph{list} iff $n$ has exited at
+least one composite enclosing $p$, in which case $n$ sees a \emph{collection} of
+$p$'s instances over the exited axes: one directory per branch (an exited
+\state{parallel} is a \emph{map}) and/or per iteration (an exited \state{loop} is a
+\emph{scan} / history).
+
+\begin{proposition}[One law for map, scan, and nesting]
+Definition~\ref{def:visible} yields correct visibility and cardinality uniformly
+for: linear chains (including grand-ancestor skips), \state{parallel} fan-out/in
+(map), \state{loop} cross-iteration history (scan) and loop-carried reads, and
+nested composites at arbitrary depth (the instance vector grows one axis per
+composite).
+\end{proposition}
+
+At run time, three accessors expose this to a stage:
+\code{c.out()} = its own instance directory; \code{c.dir(p)} = a single
+shared-scope producer instance (loop-carried-aware: the latest existing instance
+$\le$ the current index); \code{c.dirs(p)} = the collection over exited axes.
+Producer-write, the recorded \code{data.branches[i].dir}, and consumer-read all
+derive from $(\,\text{stage}, \vec{\imath}\,)$, so they cannot drift.
+
+\begin{remark}[Boundary]
+Topology derives \emph{wiring} and \emph{cardinality} (which instances are
+visible), not \emph{shape} (the schema of a file---a behavioural property checked by
+the \state{polish} pass) nor \emph{selectivity} (which subset a stage should read,
+governed by the contract prose). Conditional producers on alternate \state{switch}
+arms are offered permissively (no ``produced on every path'' guarantee for files;
+only \code{ctx.data} carries the must-write check of \S\ref{sec:defassign}).
+\end{remark}
+
+% ===========================================================================
+\section{The Static Analyzer}\label{sec:compiler-analysis}
+% ===========================================================================
+
+Every static check \reharness{} performs is an \emph{instance} of one of two
+reusable engines (\code{src/compiler/analysis/framework.ts}). New checks are added
+as instances; the codebase does not hand-roll bespoke fixpoints.
+
+\subsection{The two engines}\label{sec:engines}
+
+\begin{definition}[Reachability engine]
+$\mathrm{reachableFrom}(S, \mathrm{next})$ computes the transitive closure of the
+set $S$ under the successor relation $\mathrm{next}$ by worklist BFS. The lattice is
+trivial (a reachable set).
+\end{definition}
+
+\begin{definition}[Monotone data-flow engine]\label{def:kamullman}
+$\mathrm{solveMonotoneSets}$ is the \textbf{Kam--Ullman monotone data-flow
+framework} specialised to the lattice $L = (\powerset(K), \subseteq)$ of subsets of
+a finite key set $K$, with a gen-only forward transfer function
+\[
+  \mathrm{OUT}[n] = \mathrm{gen}(n) \cup \mathrm{IN}[n], \qquad
+  \mathrm{IN}[n] = \!\!\bigmeet_{p \in \mathrm{pred}(n)}\!\! \mathrm{OUT}[p],
+\]
+iterated to a fixpoint, where $\meet$ is set intersection
+(\textbf{must} analysis) or set union (\textbf{may} analysis).
+\end{definition}
+
+\begin{proposition}[Convergence]\label{prop:converge}
+$\mathrm{solveMonotoneSets}$ terminates at the least fixpoint. The transfer
+functions are monotone and the lattice $\powerset(K)$ has finite height $|K|$;
+hence by the Kam--Ullman theorem the chaotic iteration converges.
+\end{proposition}
+
+\subsection{The checks, as instances}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Check} & \textbf{Engine instance} & \textbf{Module} \\
+\midrule
+reachable-from-initial   & forward reachability from $q_0$           & \code{semantic.ts} \\
+can-reach-a-final        & backward reachability from $F$ (co-reach.) & \code{semantic.ts} \\
+definite assignment      & forward \emph{must} (meet $=$ intersect)  & \code{dataflow.ts} \\
+\code{visibleProducers}  & backward may-reach.\ $+$ cardinality      & \code{graph.ts} \\
+config-flow              & read-set $\subseteq$ declared inputs      & \code{dataflow.ts} \\
+grammar / well-formedness& the format's ``type system''             & \code{lint.ts} \\
+contract coverage        & every active state has a \code{<contract>} & \code{semantic.ts} \\
+\bottomrule
+\end{tabular}
+\caption{Each static check is a named instance of an engine in \S\ref{sec:engines}.}
+\label{tab:checks}
+\end{table}
+
+\subsection{Reachability and dead-ends}
+
+Reachable-from-initial is $\mathrm{reachableFrom}(\{q_0\}, \mathrm{succ})$; any
+state not in the result is unreachable. Can-reach-a-final is
+$\mathrm{reachableFrom}(F, \mathrm{succ}^{-1})$ over reverse edges (co-reachability);
+any state not in the result is a dead end. The successor relation is
+\emph{role-aware}: a \state{parallel} branch or \state{loop} step routes through its
+parent composite's join, not its own \code{<on>} edges.
+
+\subsection{Definite assignment over \code{ctx.data}}\label{sec:defassign}
+
+\begin{definition}[Definite assignment]
+A read of \code{data.k} at state $n$ is \emph{safe} if \code{k} is written on
+\emph{every} path reaching $n$. This is the textbook forward-\emph{must} data-flow
+problem: the instance of Def.~\ref{def:kamullman} with $\meet = {}$intersection and
+$\mathrm{gen}(n)$ the keys $n$ definitely writes. Let $\mathrm{IN}[n]$ be the
+fixpoint. A read of \code{data.k} at $n$ is flagged unless $\code{k} \in
+\mathrm{IN}[n]$.
+\end{definition}
+
+\begin{proposition}[Soundness of the must-check]
+If the check does not flag a read of \code{data.k} at $n$, then \code{k} is written
+on every control path from $q_0$ to $n$; hence \code{data.k} is defined whenever $n$
+executes. Equivalently, the check flags a read only when a writer-free path provably
+exists.
+\end{proposition}
+
+A refinement distinguishes \emph{entry-reads} (declared reads; the \code{over}
+expression of a \state{parallel}, evaluated at entry; the value expressions of a
+\state{set}) from \emph{after-reads} (the guards on the state's own outgoing
+transitions, evaluated \emph{after} the entry action has run). Entry-reads are
+checked against $\mathrm{IN}[n]$; after-reads against $\mathrm{IN}[n] \cup
+\mathrm{gen}(n)$, since a node's own writes are available to its own outgoing guards.
+This eliminates a false positive on the common pattern ``a \state{code} state writes
+\code{data.x} then routes on \code{expr:data.x}''.
+
+% ===========================================================================
+\section{The External Interface}\label{sec:inputs}
+% ===========================================================================
+
+The one thing about data that \emph{is} declared is the CLI interface, because it
+is external---it comes from the user, not from any graph edge, so there is no
+producer to derive it from.
+
+\begin{principle}[Declare the external, derive the internal]\label{prin:law}
+Internal data flow is derived from graph edges (Principle~\ref{prin:edge}). The
+external interface (CLI inputs) is declared, in a per-pipeline \code{<inputs>}
+block. This is the irreducible signature of the pipeline, not a return to declared
+data flow.
+\end{principle}
+
+Each \code{<arg>} declares a \code{config.X} field; codegen generates the argument
+parser from the declaration (positional vs.\ flag, type coercion among
+\code{string}/\code{list}/\code{number}/\code{bool}, defaults, required-ness). Two
+fields are always provided and never declared: \code{config.target} (the working
+directory) and \code{config.input} (positional arguments joined).
+
+\begin{definition}[Config-flow check]
+Let $\mathrm{Decl}$ be the declared inputs $\cup\, \{\code{target}, \code{input}\}$
+and $\mathrm{Used}$ the set of \code{config.X} fields read anywhere (skeleton
+expressions: guards, \code{over}, \code{exit}, \code{model-expr}, \code{set} values;
+and the generated code: \code{c.config.X}). The check requires $\mathrm{Used}
+\subseteq \mathrm{Decl}$.
+\end{definition}
+
+\begin{corollary}[CLI correctness by construction]
+If a pipeline passes the config-flow check, every \code{config.X} the pipeline reads
+is parsed from the command line by the generated parser. Hence ``compiles''
+implies ``CLI wiring is correct''.
+\end{corollary}
+
+% ===========================================================================
+\section{The Compiler Pipeline}\label{sec:compiler}
+% ===========================================================================
+
+The compiler (\code{/generate}) is a self-hosted \reharness{} pipeline: it is an
+FSM executed by the runtime of \S\ref{sec:runtime}. Its stages are:
+\begin{center}\small
+\state{maybe\_research} $\to$ \state{research} $\to$ \state{prd} $\to$
+\state{review\_prd} \emph{(approval)} $\to$ \state{design} $\to$ \state{construct}
+$\to$ \state{fill\_prompts} $\to$ \state{check\_dataflow} $\to$ \state{polish}
+$\to$ \state{verify} $\to$ \state{done}.
+\end{center}
+
+\subsection{The lean principle and the single artifact}
+
+\begin{principle}[The LLM authors the minimal artifact]\label{prin:lean}
+The LLM writes exactly one artifact---the \code{skeleton.xml}: the \emph{graph}
+(states $+$ typed transitions) plus a per-node behavioural \code{<contract>}
+(CDATA). Everything mechanical (the argument parser, the per-stage wiring, the
+command and library scaffolding) is a deterministic graph pass. There is no
+\code{produces}/\code{consumes}, no \code{<spec>}, no hand-built path.
+\end{principle}
+
+\subsection{The human approves intent, never the graph}
+
+\begin{principle}[PRD-first]\label{prin:prd}
+The single human checkpoint is \state{review\_prd}: the human edits and approves the
+\emph{PRD} (the product requirements document: goal, behaviour, acceptance
+criteria, scope)---the statement of \emph{intent}. The human never approves the FSM
+graph, which is a mechanical realization the compiler owns. Intent is the thing a
+human can judge; the realization is the thing the analyzer can check.
+\end{principle}
+
+The PRD is also the point of \emph{unification} of input sources: \code{/generate}
+maps $\text{prompt} + \text{research} \to \text{PRD}$, and the planned
+\code{compile} front-end maps $\text{session-logs} + \text{research} \to
+\text{PRD}$; everything downstream of the PRD is reused unchanged.
+
+\subsection{Lowering and verification}
+
+\state{construct} parses and statically validates the skeleton (lint $+$ semantic,
+Table~\ref{tab:checks}) and emits the command, the code-state library stubs, and the
+agent prompt stubs. \state{fill\_prompts} turns each \code{<contract>} into either
+an agent prompt (for \state{agent} states) or a code implementation (for \state{code}
+states), in parallel. \state{check\_dataflow} runs the data-flow analyzer
+(definite-assignment $+$ config-flow). \state{verify} compiles the generated
+TypeScript (\code{tsc --noEmit}) and loads each command's FSM graph. Note that
+verification is \emph{static}: the compiler never executes the generated pipeline;
+behavioural validation against runs is the province of a separate, future
+feedback loop (\S\ref{sec:limitations}).
+
+\subsection{Correction: one corrector in a hot context}\label{sec:lint}
+
+\begin{principle}[Polish, not a review loop]\label{prin:polish}
+Correction is a single \state{polish} agent that reviews the whole generated
+pipeline against the PRD and fixes the \emph{leaves} (agent prompts, code
+implementations) in one hot context---replacing the older
+review$\to$fix$\to$re-review loop. \state{redesign} is a rare last resort for
+topology changes (when \state{polish} cannot fix a problem in the leaves and
+escalates); it stays faithful to the approved PRD---it changes \emph{how}, never
+\emph{what}.
+\end{principle}
+
+\begin{principle}[Decisions belong to states or agents]\label{prin:decisions}
+Routing decisions belong to FSM states (\state{switch}, guarded transitions);
+judgement decisions belong to an agent. Neither belongs to imperative glue between
+stages. The runtime does not parse, classify, or gate between agent turns.
+\end{principle}
+
+% ===========================================================================
+\section{Amortization of Reasoning}\label{sec:amortization}
+% ===========================================================================
+
+A \state{code} state is \emph{frozen reasoning}: authored once at compile time, then
+executed at zero token cost forever. Amortization is the compiler's policy of
+realizing a stage as \state{code} rather than \state{agent} whenever the reasoning
+is not actually irreducible. Because invariant ``a node is wholly \state{code} or
+wholly \state{agent}'' holds (an embedded LLM call inside a code state is rejected
+by lint), amortization is a \emph{total} demotion $\state{agent} \to \state{code}$,
+and its boundary is objective.
+
+\begin{definition}[Demotability]\label{def:demote}
+A stage $n$ is \emph{demotable} to \state{code} iff both:
+\begin{enumerate}[label=(\alph*),nosep]
+  \item \textbf{structured input}: every producer $n$ reads (its ancestors via
+        Def.~\ref{def:visible}) is a \state{code}/\state{set} state, so the bytes
+        carry a compiler-authored schema. \emph{This condition is statically
+        decidable} from the graph.
+  \item \textbf{mechanical contract}: the contract is a total computable function
+        over that structure (reformat, filter, sort, dedup, tally, arithmetic,
+        extract a field, validate a schema). It is \emph{not} a judgement
+        (summarize, rate, classify ambiguous text, cluster ``same issue?'',
+        assign severity). \emph{This condition is not statically decidable}---by
+        Rice's theorem, the semantic property ``this specification is a pure
+        function over the structure'' is undecidable---so it is a judgement, which
+        by Principle~\ref{prin:decisions} belongs to the design agent, not to a
+        static rule.
+\end{enumerate}
+\end{definition}
+
+\begin{remark}[Asymmetry and the over-demotion hazard]
+Condition (a) is necessary but not sufficient: one can perform judgement over JSON.
+Demoting when (b) is false is the worst error---the empirically documented failure
+mode in which a regex over an invoice extracts the vendor name at $\sim$20\% accuracy
+where an LLM reaches $\sim$80\%: the input looked parseable but the task was
+semantic. The policy is therefore conservative: when (b) is in doubt, keep the stage
+an \state{agent}. The rule is realized inline in the \state{design} prompt (it costs
+no extra pass and no extra tokens); the judgement of (b) is made once, at authoring.
+\end{remark}
+
+The two limiting cases are both reachable: a purely generative linear pipeline
+(e.g.\ research $\to$ outline $\to$ render) admits no demotion beyond final I/O,
+because the chain is agent-fed throughout; a purely mechanical pipeline (e.g.\
+validate-then-concatenate two files) demotes to \emph{zero} agent states---a fully
+deterministic, zero-token workflow, which is exactly the ``Compiled AI'' limit
+reached from the agent-first side.
+
+% ===========================================================================
+\section{Relation to Prior Work}
+% ===========================================================================
+
+\paragraph{LLM-as-compiler.} DSPy compiles declarative LLM pipelines into optimized
+prompts/weights; LLM+P translates natural language into a formal planning
+specification (PDDL) delegated to a classical solver; ``Compiled AI'' (Trooskens et
+al., 2026) generates deterministic code at a compilation phase and executes it with
+zero run-time model calls, with a four-stage generation-and-validation pipeline and
+a template/module/prompt-block component library. \reharness{} shares the
+compile-once stance but differs in three ways: (i) it compiles \emph{orchestration}
+(an analyzable FSM with derived data flow) rather than emitting business code into
+fixed templates; (ii) it keeps irreducible reasoning as analyzable agent leaves
+rather than forbidding all run-time inference (its ``Code Factory''/bounded-agentic
+escape hatch is, in \reharness{}, the primary and only mode, governed by
+Def.~\ref{def:demote}); and (iii) the human approves \emph{intent} (the PRD), not a
+configuration.
+
+\paragraph{State machines.} The runtime is a named restriction of Harel
+\emph{Statecharts} and \emph{UML} run-to-completion semantics, dropping orthogonal
+regions and Mealy edge-actions (\S\ref{sec:restrictions}). The \state{parallel}
+construct is a fork--join task model, not orthogonal-region concurrency.
+
+\paragraph{Program analysis.} The analyzer is the Kam--Ullman monotone data-flow
+framework (reaching definitions, live variables, and definite assignment are its
+classical instances) plus transitive-closure reachability; the data-flow/workspace
+model is the polyhedral iteration space (Feautrier's instance-wise array data-flow
+analysis).
+
+% ===========================================================================
+\section{Limitations and Boundaries}\label{sec:limitations}
+% ===========================================================================
+
+\begin{itemize}[nosep]
+  \item \textbf{Compilation is static by design.} The compiler never runs the
+        generated pipeline; \state{verify} checks types and graph loading, not
+        behaviour. Behavioural correctness (e.g.\ a consensus rule that is
+        well-formed but vacuous, an edge-case in a code state) is observable only
+        from runs and is the province of a separate feedback loop (\emph{evolve}),
+        connected to the compiler by an external $\text{compile} \to \text{run} \to
+        \text{evolve}$ cycle, not by execution inside \code{/generate}.
+  \item \textbf{The intent source is variable.} A short prompt leans heavily on the
+        (nondeterministic) web-research stage, so the PRD---and hence the
+        topology---varies run to run. This is intent variability, not realization
+        drift; the human-approves-PRD checkpoint (Principle~\ref{prin:prd}) is the
+        anchor against it.
+  \item \textbf{Conditional file producers} on alternate \state{switch} arms have no
+        must-produce guarantee (only \code{ctx.data} has the must-write check);
+        \state{call} sub-pipeline outputs are not modelled as producers.
+  \item \textbf{Shape and selectivity are out of scope for topology.} Topology
+        derives wiring and cardinality, not file schemas or which subset to read;
+        those are behavioural, checked by \state{polish} or stated in contracts.
+\end{itemize}
+
+% ===========================================================================
+\section{Conclusion}
+% ===========================================================================
+
+\reharness{} is a reasoning compiler whose two layers are named restrictions of
+standard models: a deterministic hierarchical Moore-action transducer for execution
+(deterministic and terminating by construction, Theorems~\ref{thm:determinism} and
+\ref{thm:termination}), and a lean, PRD-first compiler whose every static check is
+an instance of the Kam--Ullman framework or transitive-closure reachability, and
+whose inter-stage data flow is derived from the polyhedral iteration space rather
+than declared. The unifying law---\emph{derive the internal, declare the
+external}---and the amortization rule---\emph{demote to code iff input is structured
+and the contract is mechanical}---let the same pipeline span the full spectrum from
+purely generative (all agents) to purely deterministic (zero agents, the Compiled-AI
+limit). The design's discipline is to keep that skeleton deterministic and
+analyzable, and to spend nondeterministic intelligence only where it is irreducible.
+
+\appendix
+\section{Notation}
+\begin{center}\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Symbol & Meaning \\
+\midrule
+$Q, q_0, F$ & states, initial state, final states \\
+$\Sigma$ & event alphabet (\code{DONE}, \code{ERROR}, \code{PASS}, $\dots$) \\
+$\transition$ & transition function (Def.~\ref{def:delta}) \\
+$\sigma$ & data store (\code{ctx.data} $+$ \code{config} $+$ workspace) \\
+$\mathrm{scope}(n)$ & enclosing-composite chain of $n$ (Def.~\ref{def:scope}) \\
+$\vec{\imath}$ & instance vector, one index per axis \\
+$\mathit{single}(n), \mathit{list}(n)$ & visible producers by cardinality (Def.~\ref{def:visible}) \\
+$L = (\powerset(K), \subseteq)$ & data-flow lattice (Def.~\ref{def:kamullman}) \\
+$\meet$ & meet ($\cap$ for must, $\cup$ for may) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}
