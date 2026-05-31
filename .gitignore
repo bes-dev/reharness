@@ -11,3 +11,4 @@ examples/presenter/
 
 # built docs (regenerate with: tectonic docs/reharness.tex)
 docs/*.pdf
+docs/*.log
