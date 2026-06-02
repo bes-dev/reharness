@@ -27,6 +27,19 @@ export interface HarnessDecl {
   contextFiles?: boolean;
 }
 
+/** One synthesized tool for an agent leaf: a deterministic operation the agent CALLS instead of reasoning out
+ *  (L-sub amortization). The compiler generates a Pi extension from this; the agent is spawned with it via
+ *  `--extension`. See docs/design/tool-synthesis.md. Agent/interactive states only. */
+export interface ToolDecl {
+  /** Tool name the LLM calls (snake_case identifier; becomes registerTool name). */
+  name: string;
+  /** Declared world-effect of the generated body (for the safety check). Defaults to pure/none. */
+  effect?: string;
+  /** Behavioural spec of the tool: what it computes over what input → what output. Same artifact class as a
+   *  code state's <contract>; fill turns it into the deterministic execute() body. */
+  spec?: string;
+}
+
 export interface SkeletonState {
   type: "agent" | "interactive" | "code" | "approval" | "switch" | "set" | "parallel" | "loop" | "call" | "wait" | "final";
   status?: "success" | "error";
@@ -81,6 +94,8 @@ export interface SkeletonState {
   contract?: string;
   /** Per-agent harness (agent/interactive only). Absent ⇒ Pi defaults (pre-harness behaviour). */
   harness?: HarnessDecl;
+  /** Synthesized tools (agent/interactive only). Codegen emits a Pi extension; the leaf is spawned with it. */
+  tools?: ToolDecl[];
   /** data.* / config.* keys this node REQUIRES present on entry (code/set states). Extracted from generated
    *  code for code states; the data-flow (use-before-def) analyzer uses it. */
   reads?: string[];

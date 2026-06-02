@@ -51,6 +51,15 @@ The PRD is the source of intent: **every stage must serve something the PRD asks
    - `thinking="off|minimal|low|medium|high|xhigh"` — more thinking for genuinely hard reasoning, less (or `off`) for near-mechanical agent work. Omit for the default.
    - `context-files="off"` — keep the project's AGENTS.md/CLAUDE.md out of this leaf (usually right: a generated leaf has its own contract). 
    This is a local, economic choice — judge it from the leaf's own task. No `<harness>` ⇒ Pi defaults (fine for most leaves). Example: `<harness model="anthropic/claude-opus-4-8" thinking="high" />` on a deep-reasoning reviewer; nothing on a simple formatter.
+7. **Give an agent generated tools for its mechanical sub-operations (optional `<tools>`).** This is amortization *inside* an agent: if a reasoning leaf contains a mechanical sub-op it would otherwise do by reasoning (parse an .xlsx, run a specific diff/sort/dedup algorithm, validate a JSON schema), declare a tool for it so the agent **calls** it instead of reasoning it out. Same demotability test as code states ((a) structured input ∧ (b) mechanical) — but scoped to the sub-op; the agent keeps the judgement, the tool takes the mechanics. Syntax:
+   ```xml
+   <tools>
+     <tool name="parse_xlsx" effect="ReadWorkspace">
+       <spec><![CDATA[ Input {path}. Parse the .xlsx at path; return {sheets:[{name,rows:string[][]}]}. Pure parse, no interpretation. ]]></spec>
+     </tool>
+   </tools>
+   ```
+   The `<spec>` is to a tool what `<contract>` is to a code state — `fill_prompts` turns it into a deterministic `execute()`. Only extract a tool when the sub-op is genuinely mechanical; when in doubt, leave it in the prompt (a correct slow reasoning beats a wrong tool). Most agents need NO `<tools>`.
 
 ## How to write a `<contract>`
 

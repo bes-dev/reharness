@@ -1,12 +1,12 @@
 import { XMLParser } from "fast-xml-parser";
-import type { Skeleton, SkeletonState, GuardedTransition, DataAssignment, InputDecl, HarnessDecl } from "./schema.js";
+import type { Skeleton, SkeletonState, GuardedTransition, DataAssignment, InputDecl, HarnessDecl, ToolDecl } from "./schema.js";
 
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "@_",
   trimValues: true,
   parseAttributeValue: false,
-  isArray: (name) => ["state", "on", "go", "show", "edit", "data", "step", "arg"].includes(name),
+  isArray: (name) => ["state", "on", "go", "show", "edit", "data", "step", "arg", "tool"].includes(name),
 });
 
 export function parseSkeletonXML(xml: string): Skeleton {
@@ -52,6 +52,8 @@ function parseState(raw: any): SkeletonState {
   if (contract) st.contract = contract;
   const harness = parseHarness(raw.harness);
   if (harness) st.harness = harness;
+  const tools = parseTools(raw.tools);
+  if (tools.length) st.tools = tools;
   const reads = parseKeyList(raw["@_reads"]);
   if (reads.length) st.reads = reads;
   const writes = parseKeyList(raw["@_writes"]);
@@ -68,6 +70,18 @@ function parseHarness(raw: any): HarnessDecl | undefined {
   if (raw["@_model"]) h.model = raw["@_model"];
   if (raw["@_context-files"] === "off") h.contextFiles = false;
   return (h.thinking || h.model || h.contextFiles !== undefined) ? h : undefined;
+}
+
+/** Parse `<tools><tool name=.. effect=..><spec>..</spec></tool></tools>` into ToolDecl[]. */
+function parseTools(raw: any): ToolDecl[] {
+  const tools = raw?.tool || [];
+  return tools.map((t: any): ToolDecl => {
+    const d: ToolDecl = { name: t["@_name"] || "" };
+    if (t["@_effect"]) d.effect = t["@_effect"];
+    const spec = cdataText(t.spec);
+    if (spec) d.spec = spec;
+    return d;
+  });
 }
 
 /** Parse a `reads`/`writes` attribute: comma- or whitespace-separated namespace keys (data./config.). */
@@ -317,6 +331,19 @@ export function serializeSkeletonXML(skeleton: Skeleton): string {
       if (h.thinking) ha.push(`thinking="${h.thinking}"`);
       if (h.contextFiles === false) ha.push(`context-files="off"`);
       if (ha.length) lines.push(`    <harness ${ha.join(" ")} />`);
+    }
+    if (state.tools?.length) {
+      lines.push(`    <tools>`);
+      for (const t of state.tools) {
+        const ta = [`name="${esc(t.name)}"`];
+        if (t.effect) ta.push(`effect="${esc(t.effect)}"`);
+        if (t.spec?.trim()) {
+          lines.push(`      <tool ${ta.join(" ")}><spec>${cdata(t.spec.trim())}</spec></tool>`);
+        } else {
+          lines.push(`      <tool ${ta.join(" ")} />`);
+        }
+      }
+      lines.push(`    </tools>`);
     }
     if (state.contract?.trim()) lines.push(`    <contract>${cdata(state.contract.trim())}</contract>`);
 

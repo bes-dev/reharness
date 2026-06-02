@@ -1,6 +1,6 @@
 import { writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync } from "fs";
 import { resolve, dirname } from "path";
-import type { Skeleton, SkeletonState, GuardedTransition } from "./schema.js";
+import type { Skeleton, SkeletonState, GuardedTransition, ToolDecl } from "./schema.js";
 import { parseSkeletonXML } from "./xml.js";
 import { compileGuardExpr } from "./expr.js";
 import { stateRoleMap, computeRoles, visibleProducers } from "./analysis/graph.js";
@@ -68,7 +68,47 @@ export function generateFromSkeleton(sk: Skeleton, reharnessDir: string): void {
     if (!existsSync(p)) writeFileSync(p, `<!-- TODO: prompt for ${name} -->\n`);
   }
 
+  // Synthesized tools: one Pi extension per agent leaf that declares <tools>. Generated like lib code —
+  // written once as a stub (execute body = TODO), then filled by fill_prompts. Idempotent: don't clobber.
+  const toolStates = agentStates.filter(n => sk.states[n].tools?.length);
+  if (toolStates.length) {
+    const toolsDir = resolve(reharnessDir, "tools");
+    mkdirSync(toolsDir, { recursive: true });
+    for (const n of toolStates) {
+      const p = resolve(toolsDir, `${n}-tools.ts`);
+      if (!existsSync(p)) writeFileSync(p, emitToolExtension(n, sk.states[n].tools!));
+    }
+  }
+
   emitCompiled(sk, reharnessDir);
+}
+
+/** Generate a Pi extension registering one tool per <tool> spec. Bodies are stubs (TODO) that fill_prompts
+ *  turns into deterministic implementations — same lifecycle as code-state lib. Format per Pi SDK:
+ *  `export default (pi) => pi.registerTool({ name, label, description, parameters, execute })`. */
+export function emitToolExtension(stateName: string, tools: ToolDecl[]): string {
+  const reg = tools.map(t => {
+    const desc = (t.spec?.split("\n")[0] ?? `synthesized tool ${t.name}`).replace(/`/g, "'").slice(0, 200);
+    const specComment = t.spec ? `\n      // SPEC:\n${t.spec.split("\n").map(l => `      //   ${l}`).join("\n")}` : "";
+    return `  pi.registerTool({
+    name: ${JSON.stringify(t.name)},
+    label: ${JSON.stringify(t.name)},
+    description: ${JSON.stringify(desc)},
+    parameters: Type.Object({}),  // TODO: declare params per the spec (typebox; use StringEnum not Type.Union)
+    async execute(_id: string, _params: any) {
+      // TODO: implement ${t.name} — deterministic ${t.effect ? `(effect: ${t.effect})` : "(pure)"}.${specComment}
+      return { content: [{ type: "text", text: "" }], details: {} };
+    },
+  });`;
+  }).join("\n");
+  return `// Synthesized tools for agent leaf '${stateName}'. One Pi extension; loaded via --extension.
+import { Type } from "typebox";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export default function install(pi: ExtensionAPI) {
+${reg}
+}
+`;
 }
 
 /** Re-emit the consolidated single-file view after lib/agents bodies have been filled.
@@ -290,7 +330,7 @@ ${assignments}
   if (state.type === "code" && !on["ERROR"]) on["ERROR"] = "error";
 
   if (state.type === "agent") {
-    const optsExpr = agentOpts(state, role, vis);
+    const optsExpr = agentOpts(name, state, role, vis);
     if (role === "branch") {
       return `        ${name}: {
           entry: async (c) => {
@@ -459,7 +499,7 @@ function sanitizeId(id: string): string {
  *  Merges dynamic model routing (modelExpr > parallel-branch input) with the visible producers — single-dir
  *  (`inputs`) and per-branch (`inputLists`) — that the runtime exposes to this agent. All DERIVED from the
  *  topology (visibleProducers), never declared, so producer and consumer can't drift. */
-function agentOpts(state: SkeletonState, role: "branch" | "join" | "step" | undefined, vis: Visible): string {
+function agentOpts(name: string, state: SkeletonState, role: "branch" | "join" | "step" | undefined, vis: Visible): string {
   const dataEntries: string[] = [];
   if (vis.single.length) dataEntries.push(`inputs: ${JSON.stringify(vis.single)}`);
   if (vis.list.length) dataEntries.push(`inputLists: ${JSON.stringify(vis.list)}`);
@@ -469,6 +509,12 @@ function agentOpts(state: SkeletonState, role: "branch" | "join" | "step" | unde
   const h = state.harness;
   if (h?.thinking) dataEntries.push(`thinking: ${JSON.stringify(h.thinking)}`);
   if (h?.contextFiles === false) dataEntries.push(`noContextFiles: true`);
+
+  // Synthesized tools (L-sub amortization): the leaf is spawned with its generated Pi extension. The path is
+  // resolved at runtime from ctx.agents (.reharness/agents) → sibling .reharness/tools/<state>-tools.ts.
+  if (state.tools?.length) {
+    dataEntries.push(`extensions: [resolve(ctx.agents, '..', 'tools', ${JSON.stringify(`${name}-tools.ts`)})]`);
+  }
 
   const dynModel = state.modelExpr
     ? compileGuardExpr(state.modelExpr)

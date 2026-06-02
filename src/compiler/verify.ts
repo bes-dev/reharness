@@ -49,6 +49,15 @@ export function verifyGenerated(targetDir: string): string[] {
         errors.push(`## Embedded agent call in code state\n[${sk.id}] \`lib/${sk.id}-states.ts\` calls c.agent(${[...embedded].map(n => `'${n}'`).join(", ")}) from a code state. Code states are deterministic and must not invoke agents — promote each LLM call to its own \`agent\` state (or a \`parallel\`/\`loop\` over an agent state).`);
       }
     }
+
+    // Synthesized tool extensions must have their execute() bodies filled (same gate as code states).
+    for (const [name, state] of Object.entries(sk.states)) {
+      if (!state.tools?.length) continue;
+      const toolPath = resolve(root, "tools", `${name}-tools.ts`);
+      if (!existsSync(toolPath)) { errors.push(`## Missing tool extension\n[${sk.id}] state \`${name}\` declares <tools> but \`tools/${name}-tools.ts\` is absent`); continue; }
+      const todos = (readFileSync(toolPath, "utf-8").match(/\/\/\s*TODO/g) || []).length;
+      if (todos) errors.push(`## Unfilled tool\n[${sk.id}] \`tools/${name}-tools.ts\` has ${todos} TODO(s)`);
+    }
   }
 
   // 2. TypeScript compile.
