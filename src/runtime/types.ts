@@ -189,6 +189,13 @@ export interface AgentOpts {
   validate?: () => string[] | Promise<string[]>;
   /** Agent-dir-relative prompt basename to append to the system prompt (e.g. a shared syntax reference). */
   append?: string;
+  /** Per-leaf harness (synthesized by codegen from the state's <harness>). Lowered to Pi flags by the
+   *  runtime; all optional, absent ⇒ Pi defaults. See docs/design/per-agent-harness.md. */
+  thinking?: string;
+  tools?: string[];
+  extensions?: string[];
+  skills?: string[];
+  noContextFiles?: boolean;
 }
 
 export interface InteractiveOpts extends AgentOpts {

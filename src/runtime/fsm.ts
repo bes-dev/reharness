@@ -317,6 +317,8 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
         prompt: promptFile, task: task2, cwd, onLine: emit, onStatus,
         logFile, piBinary, piModel: o?.model || piModel, signal: sig,
         validate: o?.validate, appendPrompt: resolveAppend(o?.append),
+        thinking: o?.thinking, tools: o?.tools, extensions: o?.extensions,
+        skills: o?.skills, noContextFiles: o?.noContextFiles,
       });
       emit(`✓ ${name}`);
     }
@@ -337,6 +339,8 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
       await runInteractive({
         prompt: promptFile, task, cwd, piBinary, piModel: o?.model || piModel, signal: sig,
         appendPrompt: resolveAppend(o?.append),
+        thinking: o?.thinking, tools: o?.tools, extensions: o?.extensions,
+        skills: o?.skills, noContextFiles: o?.noContextFiles,
       });
 
       for (let i = 0; i < absArtifacts.length; i++) {

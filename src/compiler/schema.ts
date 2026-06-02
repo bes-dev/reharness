@@ -15,6 +15,18 @@ export interface DataAssignment {
 
 export type WaitMode = "timer" | "file" | "shell" | "webhook";
 
+/** Per-agent harness: the local capability/economic environment of an agent leaf. Synthesized inline by the
+ *  design pass from the node's contract (effects/thinking) and lowered to Pi CLI flags by codegen+runtime.
+ *  See docs/design/per-agent-harness.md and harness-synthesis.md. Agent/interactive states only. */
+export interface HarnessDecl {
+  /** Declared (economic judgement): per-leaf thinking budget. */
+  thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  /** Declared (economic judgement): per-leaf model id, overrides the pipeline default (but not model-expr). */
+  model?: string;
+  /** Disable AGENTS.md/CLAUDE.md discovery for this leaf (a generated leaf has its own prompt). */
+  contextFiles?: boolean;
+}
+
 export interface SkeletonState {
   type: "agent" | "interactive" | "code" | "approval" | "switch" | "set" | "parallel" | "loop" | "call" | "wait" | "final";
   status?: "success" | "error";
@@ -67,6 +79,8 @@ export interface SkeletonState {
   modelExpr?: string;
   /** Behavioural contract: what this node must guarantee. Written by the `design` pass; consumed by fill_prompts. */
   contract?: string;
+  /** Per-agent harness (agent/interactive only). Absent ⇒ Pi defaults (pre-harness behaviour). */
+  harness?: HarnessDecl;
   /** data.* / config.* keys this node REQUIRES present on entry (code/set states). Extracted from generated
    *  code for code states; the data-flow (use-before-def) analyzer uses it. */
   reads?: string[];

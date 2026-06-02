@@ -46,6 +46,11 @@ The PRD is the source of intent: **every stage must serve something the PRD asks
    The deterministic core costs zero tokens forever; spend an `agent` only where reasoning is irreducible. **Every LLM call is its own `agent` state** — never a `code` state that calls an agent internally (codegen makes prompt files only for declared agent states; an embedded call throws at runtime).
 4. N parallel LLM calls over a list → `parallel` with `branch` = an `agent` state. Iterative refinement → `loop` with a `step` = an `agent`. Don't hide agent calls inside code orchestrators.
 5. **Agents read/write FILES; guards/switches read `ctx.data`.** So when a later `switch`/`check` must branch on an agent's output, insert a `code` state between them that reads the agent's output file and sets `ctx.data` (the bridge). E.g. `review (agent) → tally (code: reads review's output → sets data.has_blocking) → switch on data.has_blocking`.
+6. **Tune each agent's harness to its task (optional `<harness>`).** Add `<harness>` as the first child of an `agent` state to set, per leaf:
+   - `model="..."` — a stronger model for hard judgement (security/correctness review, synthesis), a lighter one for shallow work. Overrides the pipeline default. Omit to use the default.
+   - `thinking="off|minimal|low|medium|high|xhigh"` — more thinking for genuinely hard reasoning, less (or `off`) for near-mechanical agent work. Omit for the default.
+   - `context-files="off"` — keep the project's AGENTS.md/CLAUDE.md out of this leaf (usually right: a generated leaf has its own contract). 
+   This is a local, economic choice — judge it from the leaf's own task. No `<harness>` ⇒ Pi defaults (fine for most leaves). Example: `<harness model="anthropic/claude-opus-4-8" thinking="high" />` on a deep-reasoning reviewer; nothing on a simple formatter.
 
 ## How to write a `<contract>`
 

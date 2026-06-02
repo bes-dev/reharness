@@ -1,5 +1,5 @@
 import { XMLParser } from "fast-xml-parser";
-import type { Skeleton, SkeletonState, GuardedTransition, DataAssignment, InputDecl } from "./schema.js";
+import type { Skeleton, SkeletonState, GuardedTransition, DataAssignment, InputDecl, HarnessDecl } from "./schema.js";
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -50,11 +50,24 @@ function parseState(raw: any): SkeletonState {
   if (raw["@_model-expr"]) st.modelExpr = raw["@_model-expr"];
   const contract = cdataText(raw.contract);
   if (contract) st.contract = contract;
+  const harness = parseHarness(raw.harness);
+  if (harness) st.harness = harness;
   const reads = parseKeyList(raw["@_reads"]);
   if (reads.length) st.reads = reads;
   const writes = parseKeyList(raw["@_writes"]);
   if (writes.length) st.writes = writes;
   return st;
+}
+
+/** Parse a `<harness>` element (attributes only). Returns undefined when absent or empty so the state
+ *  stays harness-free (Pi defaults). `context-files="off"` → contextFiles:false. */
+function parseHarness(raw: any): HarnessDecl | undefined {
+  if (!raw) return undefined;
+  const h: HarnessDecl = {};
+  if (raw["@_thinking"]) h.thinking = raw["@_thinking"];
+  if (raw["@_model"]) h.model = raw["@_model"];
+  if (raw["@_context-files"] === "off") h.contextFiles = false;
+  return (h.thinking || h.model || h.contextFiles !== undefined) ? h : undefined;
 }
 
 /** Parse a `reads`/`writes` attribute: comma- or whitespace-separated namespace keys (data./config.). */
@@ -297,6 +310,14 @@ export function serializeSkeletonXML(skeleton: Skeleton): string {
     }
     lines.push(`  <state ${stateAttrs.join(" ")}>`);
 
+    if (state.harness) {
+      const h = state.harness;
+      const ha: string[] = [];
+      if (h.model) ha.push(`model="${esc(h.model)}"`);
+      if (h.thinking) ha.push(`thinking="${h.thinking}"`);
+      if (h.contextFiles === false) ha.push(`context-files="off"`);
+      if (ha.length) lines.push(`    <harness ${ha.join(" ")} />`);
+    }
     if (state.contract?.trim()) lines.push(`    <contract>${cdata(state.contract.trim())}</contract>`);
 
     if (state.type === "switch" && state.branches) {

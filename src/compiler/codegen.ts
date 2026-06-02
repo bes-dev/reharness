@@ -464,11 +464,21 @@ function agentOpts(state: SkeletonState, role: "branch" | "join" | "step" | unde
   if (vis.single.length) dataEntries.push(`inputs: ${JSON.stringify(vis.single)}`);
   if (vis.list.length) dataEntries.push(`inputLists: ${JSON.stringify(vis.list)}`);
 
-  const modelSrc = state.modelExpr
+  // Per-leaf harness (synthesized from <harness>). thinking / context-files are static; model from the
+  // harness is the fallback BELOW dynamic model sources (precedence: model-expr > branch input > harness > default).
+  const h = state.harness;
+  if (h?.thinking) dataEntries.push(`thinking: ${JSON.stringify(h.thinking)}`);
+  if (h?.contextFiles === false) dataEntries.push(`noContextFiles: true`);
+
+  const dynModel = state.modelExpr
     ? compileGuardExpr(state.modelExpr)
     : role === "branch"
       ? `((c.branchInput && typeof c.branchInput === 'object') ? c.branchInput.model : undefined)`
       : null;
+  // Static harness model becomes the fallback when no dynamic model resolves.
+  const modelSrc = dynModel && h?.model
+    ? `(${dynModel} ?? ${JSON.stringify(h.model)})`
+    : dynModel ?? (h?.model ? JSON.stringify(h.model) : null);
 
   if (!dataEntries.length && !modelSrc) return "undefined";
 

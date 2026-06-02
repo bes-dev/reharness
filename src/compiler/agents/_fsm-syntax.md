@@ -6,7 +6,7 @@ for the DSL — the agent-specific prompt above tells you *what* to do; this tel
 
 ## State types
 
-- **`agent`** — headless LLM run. Optional `model-expr="EXPR"` routes per-state model from a data/config expression.
+- **`agent`** — headless LLM run. Optional `model-expr="EXPR"` routes per-state model from a data/config expression. Optional `<harness>` child tunes its per-leaf environment: `<harness model="..." thinking="off|minimal|low|medium|high|xhigh" context-files="off" />` (all attrs optional; absent ⇒ Pi defaults). `model-expr` > `<harness model>` > pipeline default.
 - **`interactive`** — LLM with terminal attached. Requires `<artifacts><edit path=.../></artifacts>`.
 - **`code`** — deterministic TypeScript function in `lib/<id>-states.ts`. Must NOT call `ctx.agent`.
 - **`switch`** — declarative branching. Ordered `<go>` children, first guard true wins.

@@ -18,6 +18,26 @@ export interface AgentRunConfig {
   validate?: () => string[] | Promise<string[]>;
   /** Absolute path to a file appended to the system prompt (Pi `--append-system-prompt`). */
   appendPrompt?: string;
+  /** Per-agent harness (synthesized per leaf; see docs/design/per-agent-harness.md). All optional;
+   *  absent ⇒ Pi defaults (identical to pre-harness behaviour). */
+  thinking?: string;          // --thinking <level>
+  tools?: string[];           // --tools allowlist (enforced)
+  extensions?: string[];      // --extension <path> (incl. generated tools)
+  skills?: string[];          // --skill <path>
+  noContextFiles?: boolean;   // --no-context-files
+}
+
+/** Lower a per-agent harness to Pi CLI flags. `undefined`/empty ⇒ `[]` (backward-compatible: no harness
+ *  ⇒ identical spawn). Shared by all three spawn paths (one-shot JSON, RPC, interactive) so they can't drift.
+ *  `--model` is handled separately by each path (it predates the harness). */
+export function harnessArgs(c: AgentRunConfig): string[] {
+  const a: string[] = [];
+  if (c.thinking) a.push("--thinking", c.thinking);
+  if (c.tools?.length) a.push("--tools", c.tools.join(","));
+  for (const e of c.extensions ?? []) a.push("--extension", e);
+  for (const s of c.skills ?? []) a.push("--skill", s);
+  if (c.noContextFiles) a.push("--no-context-files");
+  return a;
 }
 
 interface ParseCallbacks {
@@ -96,6 +116,7 @@ export async function runAgent(config: AgentRunConfig): Promise<void> {
   if (config.piModel) args.push("--model", config.piModel);
   args.push("--system-prompt", config.prompt);
   if (config.appendPrompt) args.push("--append-system-prompt", config.appendPrompt);
+  args.push(...harnessArgs(config));
   args.push(config.task);
 
   const exitCode: number = await new Promise((res, rej) => {
@@ -153,6 +174,7 @@ async function runAgentRpc(config: AgentRunConfig): Promise<void> {
   if (config.piModel) args.push("--model", config.piModel);
   args.push("--system-prompt", config.prompt);
   if (config.appendPrompt) args.push("--append-system-prompt", config.appendPrompt);
+  args.push(...harnessArgs(config));
 
   const proc = spawn(config.piBinary || "pi", args, {
     cwd: config.cwd,
@@ -254,6 +276,7 @@ export async function runInteractive(config: AgentRunConfig): Promise<void> {
   if (config.piModel) args.push("--model", config.piModel);
   args.push("--system-prompt", config.prompt);
   if (config.appendPrompt) args.push("--append-system-prompt", config.appendPrompt);
+  args.push(...harnessArgs(config));
   if (config.task) args.push(config.task);
 
   const exitCode: number = await new Promise((res, rej) => {
