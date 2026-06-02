@@ -201,6 +201,18 @@ export function lintSkeleton(sk: Skeleton): string[] {
       errors.push(`Interactive state '${name}' must declare at least one <artifacts><edit path=.../></artifacts>`);
     }
 
+    // <harness>/<tools> equip a headless agent leaf; they are meaningless on other state types. interactive is
+    // a human-in-the-loop session (no synthesized tools), and structural states have no agent to equip.
+    if (state.harness && state.type !== "agent") {
+      errors.push(`State '${name}' (${state.type}) cannot have a <harness> — only headless 'agent' states.`);
+    }
+    if (state.tools?.length && state.type !== "agent") {
+      errors.push(`State '${name}' (${state.type}) cannot have <tools> — only headless 'agent' states.`);
+    }
+    for (const t of state.tools || []) {
+      if (!IDENT.test(t.name)) errors.push(`State '${name}' tool name '${t.name}' is not a valid identifier (becomes the registerTool name).`);
+    }
+
     if (state.type === "approval") {
       if (!state.prompt) errors.push(`Approval state '${name}' missing <prompt>`);
       if (state.autoEvent && state.on && !state.on[state.autoEvent]) {

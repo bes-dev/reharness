@@ -19,5 +19,6 @@ export function validateSkeleton(sk: Skeleton): string[] {
 export { lintSkeleton } from "./lint.js";
 export { analyzeSemantics, validateContracts } from "./semantic.js";
 export { analyzeDataFlow, configFlowErrors, extractCodeDataIO, applyCodeDataIO } from "./dataflow.js";
+export { toolSafetyErrors } from "./tool-safety.js";
 export { computeRoles, successors, visibleProducers, enclosingScope, stateRoleMap } from "./graph.js";
 export type { RoleMaps } from "./graph.js";

@@ -2,6 +2,7 @@ import { execFileSync } from "child_process";
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { resolve } from "path";
 import { parseSkeletonXML } from "./xml.js";
+import { toolSafetyErrors } from "./analysis/tool-safety.js";
 
 /** Check that a generated `.reharness/` directory is structurally valid and the TS imports + FSM graph load. */
 export function verifyGenerated(targetDir: string): string[] {
@@ -55,8 +56,15 @@ export function verifyGenerated(targetDir: string): string[] {
       if (!state.tools?.length) continue;
       const toolPath = resolve(root, "tools", `${name}-tools.ts`);
       if (!existsSync(toolPath)) { errors.push(`## Missing tool extension\n[${sk.id}] state \`${name}\` declares <tools> but \`tools/${name}-tools.ts\` is absent`); continue; }
-      const todos = (readFileSync(toolPath, "utf-8").match(/\/\/\s*TODO/g) || []).length;
+      const toolSrc = readFileSync(toolPath, "utf-8");
+      const todos = (toolSrc.match(/\/\/\s*TODO/g) || []).length;
       if (todos) errors.push(`## Unfilled tool\n[${sk.id}] \`tools/${name}-tools.ts\` has ${todos} TODO(s)`);
+      // Tool-safety = effect inference over the filled body (the Code Gate). Skip while still a stub (TODO):
+      // the stub is effect-free, and reporting on an unfilled body is noise.
+      else {
+        const safety = toolSafetyErrors(name, state.tools, toolSrc);
+        if (safety.length) errors.push(`## Tool safety\n[${sk.id}] ${safety.join("\n")}`);
+      }
     }
   }
 

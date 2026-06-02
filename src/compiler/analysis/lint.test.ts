@@ -30,3 +30,20 @@ test("#8 satisfied when the code state declares its own ERROR transition", () =>
   }));
   assert.ok(!errs.some(e => /no state named 'error'/.test(e)), errs.join("; "));
 });
+
+test("<harness>/<tools> rejected on non-agent states", () => {
+  const errs = lintSkeleton(base({
+    a: { type: "code", harness: { model: "x" }, tools: [{ name: "t" }], on: { DONE: "done" } },
+    done: { type: "final", status: "success" },
+  }));
+  assert.ok(errs.some(e => /cannot have a <harness>/.test(e)), errs.join("; "));
+  assert.ok(errs.some(e => /cannot have <tools>/.test(e)), errs.join("; "));
+});
+
+test("tool with invalid name flagged", () => {
+  const errs = lintSkeleton(base({
+    a: { type: "agent", contract: "x", tools: [{ name: "bad-name" }], on: { DONE: "done" } },
+    done: { type: "final", status: "success" },
+  }));
+  assert.ok(errs.some(e => /tool name 'bad-name' is not a valid identifier/.test(e)), errs.join("; "));
+});

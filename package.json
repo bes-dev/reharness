@@ -1,6 +1,6 @@
 {
   "name": "reharness",
-  "version": "0.27.0",
+  "version": "0.28.0",
   "description": "Conversational compiler for AI workflows",
   "type": "module",
   "main": "dist/index.js",
@@ -24,7 +24,7 @@
   },
   "scripts": {
     "build": "node node_modules/typescript/lib/tsc.js && mkdir -p dist/compiler/agents && rm -f dist/compiler/agents/*.md && cp src/compiler/agents/*.md dist/compiler/agents/ && chmod +x dist/cli.js",
-    "test": "node --import tsx --test src/**/*.test.ts",
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "dev": "node node_modules/typescript/lib/tsc.js --watch",
     "prepublishOnly": "npm run build"
   },
