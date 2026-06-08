@@ -1,0 +1,221 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<skeleton id="nitpicker" initial="preflight" format-version="0.1">
+
+  <description>
+    Multi-model code review pipeline with optional debate mode for git diffs.
+    Fans out to N reviewer agents in parallel (each with a focused persona lens),
+    optionally runs anonymised multi-round debate (Chatham House rule — no model
+    attribution in synthesised feedback), then produces a consensus verdict via a
+    chairman aggregator model. Verdict is APPROVED / REJECTED / UNCLEAR; UNCLEAR
+    routes to a human approval checkpoint before the report is finalised.
+    Suggested additions: line-proximity deduplication, persona lenses, configurable
+    consensus threshold, optional context file, per-reviewer timeout, audit trail.
+  </description>
+
+  <usage>&lt;diff-spec&gt; [--debate] [--rounds N] [--output path]</usage>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       Stage 1: Environment preflight
+       Check API key env vars for every configured reviewer model.
+       Fails fast before any API spend.
+       ───────────────────────────────────────────────────────────── -->
+  <state name="preflight" type="code">
+    <on event="PASS" target="extract_diff"/>
+    <on event="FAIL" target="error"/>
+  </state>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       Stage 2: Diff extraction
+       `git diff <config.diffArgs>` or copy a .patch file.
+       Writes workspace/diff.patch and workspace/context.md (if contextFile set).
+       Sets data.diffLineCount.
+       ───────────────────────────────────────────────────────────── -->
+  <state name="extract_diff" type="code">
+    <on event="DONE" target="guard_size"/>
+    <on event="FAIL" target="error"/>
+  </state>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       Stage 3: Diff size guard
+       Rejects before any API spend if diff exceeds config.maxDiffLines.
+       Expression evaluated by FSM engine (no entry action).
+       ───────────────────────────────────────────────────────────── -->
+  <state name="guard_size" type="check" expr="data.diffLineCount &lt; config.maxDiffLines">
+    <on event="TRUE"  target="review"/>
+    <on event="FALSE" target="error"/>
+  </state>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       Stage 4: Parallel review fan-out (round 0)
+       One reviewer_agent per config.reviewers entry.
+       branchInput = {name, model, persona}
+       opts.model auto-wired from branchInput.model by codegen.
+       Each branch writes {branchDir}/findings.json.
+       ───────────────────────────────────────────────────────────── -->
+  <state name="review"
+         type="parallel"
+         over="config.reviewers"
+         branch="reviewer_agent"
+         join="join_reviews"
+         concurrency="4"
+         timeout="120s"/>
+
+  <!-- Individual reviewer branch.
+       Reads: workspace/diff.patch, workspace/context.md (if exists), branchInput.persona.
+       Writes: {branchDir}/findings.json (typed JSON — severity/category/line/description/suggestion).
+       Must NOT include model name, reviewer name, or persona label in findings.json.
+       opts.model auto-wired from branchInput.model.
+       The <on> below is a required syntax placeholder — ignored by parallel framework. -->
+  <state name="reviewer_agent" type="agent" timeout="90s">
+    <on event="DONE" target="done"/>
+  </state>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       Stage 5: Join reviews
+       Aggregates round-0 findings using line-proximity deduplication
+       (bucket = Math.floor(line/5), same file+category+bucket = same finding).
+       Classifies into consensus / majority / individual tiers.
+       Writes workspace/synthesis.md (anonymous — Chatham House rule).
+       Initialises workspace/audit.json.
+       Sets data.findings = {consensus, majority, individual, okCount, totalCount}.
+       ───────────────────────────────────────────────────────────── -->
+  <state name="join_reviews" type="code">
+    <on event="DONE" target="mode_switch"/>
+    <on event="FAIL" target="error"/>
+  </state>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       Stage 6: Mode switch
+       Routes to debate loop or directly to aggregator.
+       ───────────────────────────────────────────────────────────── -->
+  <state name="mode_switch" type="switch">
+    <go target="debate"    guard="config.debateMode == true"/>
+    <go target="aggregate"/>
+  </state>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       Stage 7: Debate loop (optional — only reached if debateMode=true)
+       Hard cap: max="5" iterations (static, cannot be overridden at runtime).
+       config.debateRounds is a target enforced inside synthesize_round
+       by setting data.debateConverged = true.
+       Steps run in order each iteration:
+         1. debate_fan       — re-run all reviewers with current anonymous synthesis
+         2. synthesize_round — update tiers, rewrite synthesis.md, check convergence
+       Loop exits when data.debateConverged == true OR iteration >= 5.
+       ───────────────────────────────────────────────────────────── -->
+  <state name="debate"
+         type="loop"
+         max="5"
+         exit="data.debateConverged"
+         join="aggregate">
+    <step state="debate_fan"/>
+    <step state="synthesize_round"/>
+  </state>
+
+  <!-- Debate fan-out (loop step 1).
+       Same reviewer array as round 0; branches now also read workspace/synthesis.md.
+       opts.model auto-wired from branchInput.model by codegen.
+       join="synthesize_round" is required by parallel format;
+       in loop context the loop's step sequencing drives execution — join is not followed. -->
+  <state name="debate_fan"
+         type="parallel"
+         over="config.reviewers"
+         branch="debate_reviewer_agent"
+         join="synthesize_round"
+         concurrency="4"
+         timeout="120s"/>
+
+  <!-- Debate reviewer branch.
+       Reads: workspace/diff.patch, workspace/synthesis.md (anonymous peer args),
+              workspace/context.md (if exists), branchInput.persona.
+       Writes: {branchDir}/findings.json (same schema as reviewer_agent).
+       Must NOT reveal model name, persona, or reviewer label in output.
+       opts.model auto-wired from branchInput.model.
+       The <on> below is a required syntax placeholder — ignored by parallel framework. -->
+  <state name="debate_reviewer_agent" type="agent" timeout="90s">
+    <on event="DONE" target="done"/>
+  </state>
+
+  <!-- Synthesise debate round (loop step 2).
+       Reads: data.branches (latest debate_fan output), data.findings, data.iteration,
+              config.debateRounds, config.consensusThreshold.
+       Merges new findings with cross-round consensus counts (line-proximity buckets).
+       Overwrites workspace/synthesis.md with new anonymous synthesis
+       (rotates labels: offset = iteration % reviewers.length to prevent identity inference).
+       Appends entry {round: iteration+1, ...} to workspace/audit.json.
+       Sets data.debateConverged = true when:
+         data.iteration >= config.debateRounds - 1  OR  consensus tier has plateaued.
+       The <on> below is a required syntax placeholder — ignored by loop framework. -->
+  <state name="synthesize_round" type="code">
+    <on event="DONE" target="aggregate"/>
+  </state>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       Stage 8: Chairman aggregator
+       Reads workspace/synthesis.md + workspace/audit.json from disk.
+       Writes workspace/report.md with ranked findings table,
+       "VERDICT: APPROVED|REJECTED" line, and "CONFIDENCE: 0.xx" line.
+       Uses config.aggregatorModel (typically stronger than reviewers).
+       model-expr codegen emits: opts.model = config.aggregatorModel
+       ───────────────────────────────────────────────────────────── -->
+  <state name="aggregate"
+         type="agent"
+         model-expr="config.aggregatorModel"
+         timeout="120s">
+    <on event="DONE" target="parse_verdict"/>
+  </state>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       Stage 9: Parse verdict
+       Reads workspace/report.md.
+       Extracts /^VERDICT:\s*(APPROVED|REJECTED)/im and /^CONFIDENCE:\s*([0-9.]+)/im.
+       Sets data.verdict and data.confidence.
+       Emits: APPROVED, REJECTED, or UNCLEAR.
+       UNCLEAR fires if: no VERDICT line found, OR
+         verdict==APPROVED and confidence < config.confidenceThreshold.
+       REJECTED is always emitted regardless of confidence (low-confidence rejection
+       is still a rejection — evidence was found against).
+       ───────────────────────────────────────────────────────────── -->
+  <state name="parse_verdict" type="code">
+    <on event="APPROVED" target="write_report"/>
+    <on event="REJECTED" target="write_report"/>
+    <on event="UNCLEAR"  target="human_approval"/>
+  </state>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       Stage 10: Human approval gate (UNCLEAR path only)
+       Pauses pipeline when confidence is below threshold or report is malformed.
+       Shows report and synthesis for human review in terminal.
+       APPROVE → write final output file.
+       REJECT  → abort with error status.
+       ───────────────────────────────────────────────────────────── -->
+  <state name="human_approval" type="approval">
+    <prompt>
+      The council returned UNCLEAR — confidence is below the configured threshold
+      (or the report is malformed). Review the report and the anonymised synthesis
+      below, then choose: APPROVE to write the final output file, or REJECT to abort.
+    </prompt>
+    <artifacts>
+      <show path="workspace/report.md"/>
+      <show path="workspace/synthesis.md"/>
+    </artifacts>
+    <on event="APPROVE" target="write_report"/>
+    <on event="REJECT"  target="error"/>
+  </state>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       Stage 11: Write final report
+       Copies workspace/report.md to config.outputPath (creates parent dirs).
+       ───────────────────────────────────────────────────────────── -->
+  <state name="write_report" type="code">
+    <on event="DONE" target="done"/>
+    <on event="FAIL" target="error"/>
+  </state>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       Terminal states
+       ───────────────────────────────────────────────────────────── -->
+  <state name="done"  type="final" status="success"/>
+  <state name="error" type="final" status="error"/>
+
+</skeleton>

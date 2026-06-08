@@ -27,8 +27,8 @@ scaffold → prd → skeleton → logic → ui → verify ↔ fix → complete
 
 ```bash
 cd examples/mobile-app-generator
-reharness                           # Interactive TUI
-reharness build feedwise "RSS reader with bookmarks"  # Direct
+reharness                           # List available commands
+reharness build feedwise "RSS reader with bookmarks"  # Direct run
 ```
 
 Commands:
@@ -48,7 +48,7 @@ cd apps/feedwise && npx expo start
 ## Project Structure
 
 ```
-.reharness/
+reharness/
 ├── agents/              # Agent prompts
 │   ├── prd.md           # PRD generation
 │   ├── skeleton.md      # Type-level API design

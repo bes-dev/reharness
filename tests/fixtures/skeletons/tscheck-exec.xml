@@ -1,0 +1,39 @@
+<skeleton id="tscheck" initial="typecheck" format-version="0.5">
+  <description>Run tsc --noEmit on a TypeScript project and produce a structured error report.</description>
+  <usage>&lt;project&gt; [--max-errors &lt;n&gt;]</usage>
+  <inputs>
+    <arg name="project" positional="true" required="true" />
+    <arg name="max_errors" type="number" default="10" />
+  </inputs>
+
+  <state name="typecheck" type="code">
+    <contract><![CDATA[Run `npx tsc --noEmit` via ctx.exec with cwd set to config.project.
+Capture the exit code, stdout, and stderr.
+Write a JSON file to the output directory with shape:
+  { exitCode: number, stdout: string, stderr: string }
+If ctx.exec itself throws (e.g. npx not found), catch the error and
+write the same shape with exitCode: 1 and the error message in stderr.
+Always return DONE — tsc reporting type errors is not a workflow failure.]]></contract>
+    <on event="DONE" target="build_report" />
+  </state>
+
+  <state name="build_report" type="code">
+    <contract><![CDATA[Read the tsc output JSON written by the typecheck stage.
+Parse the combined stdout+stderr to extract individual TypeScript
+diagnostic lines (lines matching the TS error pattern
+"path(line,col): error TSnnnn: message").
+Count all distinct diagnostic lines to get errorCount.
+Set status to "pass" if exitCode was 0, "fail" otherwise.
+Write report.json to the output directory with shape:
+  { status: "pass"|"fail", errorCount: number, errors: Array<{ message: string }> }
+The errors array contains at most config.max_errors entries; each entry's
+message field preserves the full original compiler diagnostic text
+(file, line, column, and message).
+Always return DONE.]]></contract>
+    <on event="DONE" target="done" />
+  </state>
+
+  <state name="done" type="final" status="success" />
+
+  <state name="error" type="final" status="error" />
+</skeleton>

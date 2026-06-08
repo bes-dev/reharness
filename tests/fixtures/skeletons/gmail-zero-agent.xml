@@ -1,0 +1,114 @@
+<skeleton id="gmail-inbox-downloader" initial="preflight" format-version="0.5">
+  <description>Fetch all Gmail Inbox messages from the last 3 days and save them as structured JSON files.</description>
+  <usage>[--help]</usage>
+
+  <state name="preflight" type="code" writes="data.error">
+    <contract><![CDATA[Check that all four required environment variables are present and non-empty:
+      GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REDIRECT_URI, GMAIL_REFRESH_TOKEN.
+
+      If any variable is absent or empty, emit a clear error message listing every
+      missing variable name (do NOT print the value of any credential var), then
+      return FAIL.
+
+      If all four are present return PASS.
+
+      No files are written by this stage.]]></contract>
+    <on event="PASS" target="list_messages" />
+    <on event="FAIL" target="error" />
+  </state>
+
+  <state name="list_messages" type="code" writes="data.error">
+    <contract><![CDATA[Initialise a googleapis OAuth2 client using GMAIL_CLIENT_ID,
+      GMAIL_CLIENT_SECRET, GMAIL_REDIRECT_URI, and GMAIL_REFRESH_TOKEN from
+      process.env, then instantiate the Gmail v1 client (the googleapis SDK
+      handles token refresh automatically).
+
+      Compute the 3-day cutoff as:
+        cutoff = Math.floor((Date.now() - 3 * 24 * 60 * 60 * 1000) / 1000)
+      (Unix epoch seconds).
+
+      Call gmail.users.messages.list with:
+        userId = 'me', labelIds = ['INBOX'], q = `after:${cutoff}`, maxResults = 500.
+      Repeat with pageToken = nextPageToken until nextPageToken is absent.
+      Coerce a missing messages field to [] on every page.
+
+      Collect all {id, threadId} stubs into a flat array.
+
+      Write the array to own output directory as `message_ids.json` (valid JSON array;
+      empty array if no messages were found).
+
+      Emit to console the total count of message IDs collected.
+
+      If the OAuth token exchange fails or any API call returns a non-2xx error, emit
+      a clear human-readable error message (do NOT include the value of
+      GMAIL_CLIENT_SECRET or GMAIL_REFRESH_TOKEN in any log line or file) and return FAIL.
+
+      Return DONE on success (including the zero-messages case).]]></contract>
+    <on event="DONE" target="fetch_and_save" />
+    <on event="FAIL" target="error" />
+  </state>
+
+  <state name="fetch_and_save" type="code" writes="data.error">
+    <contract><![CDATA[Read `message_ids.json` from the list_messages stage output directory.
+
+      If the array is empty: write `inbox-summary.json` containing the JSON
+      literal `[]` to own output directory, emit "0 messages downloaded", and
+      return DONE.
+
+      Otherwise, re-initialise the googleapis OAuth2 + Gmail v1 client from
+      env vars (same as list_messages).
+
+      Fetch full message details in parallel batches of ≤ 20 using
+      gmail.users.messages.get({ userId: 'me', id, format: 'full' }).
+      Wait for each batch to settle before starting the next, and insert a
+      50 ms delay between batches to stay within quota (250 units/user/second).
+      Emit console progress after each batch (e.g. "Fetched 20/143…").
+
+      For each raw message response, extract and assemble a record:
+        - id         : message.id
+        - threadId   : message.threadId
+        - from       : From header value, or "(unknown)" if absent
+        - to         : To header value, or "(unknown)" if absent
+        - subject    : Subject header value, or "(no subject)" if absent
+        - date       : Date header value parsed to an ISO 8601 string;
+                       fall back to new Date(Number(message.internalDate)).toISOString()
+                       if the Date header is absent or unparseable
+        - snippet    : message.snippet
+        - bodyText   : decoded UTF-8 string — prefer text/plain part; if none exists
+                       fall back to the first text/html part (stored as raw HTML);
+                       if neither exists use empty string ""
+        - bodyMimeType : "text/plain" or "text/html" depending on which part was used;
+                         omit the field when bodyText is ""
+        - labelIds   : message.labelIds array
+
+      Decoding base64url: replace '-' → '+' and '_' → '/', then
+      Buffer.from(data, 'base64').toString('utf-8'). bodyText must never be a
+      raw base64url string.
+
+      For multipart payloads, recurse into payload.parts[] to find the preferred
+      text/plain leaf; if not found recurse again for text/html.
+
+      Write each assembled record as `<id>.json` to own output directory.
+
+      After all messages are written, build a summary array containing one entry
+      per message with fields {id, threadId, from, to, subject, date, snippet}
+      and write it as `inbox-summary.json` (valid JSON array) to own output directory.
+      The summary record count must equal the number of per-message JSON files written.
+
+      Emit to console the final count and the date range (earliest and latest
+      message date) covered.
+
+      Prohibited: do NOT include the values of GMAIL_CLIENT_SECRET or
+      GMAIL_REFRESH_TOKEN in any output file or log line.
+
+      Return DONE on success. Return FAIL if any messages.get call fails with a
+      non-retriable error (emit a clear message identifying the failing message ID
+      and HTTP status).]]></contract>
+    <on event="DONE" target="done" />
+    <on event="FAIL" target="error" />
+  </state>
+
+  <state name="done" type="final" status="success" />
+
+  <state name="error" type="final" status="error" />
+</skeleton>
