@@ -1,9 +1,4 @@
-/**
- * reharness: Deterministic multi-agent pipeline framework.
- *
- * Re-exports core + meta modules.
- * Use `reharness/core` for core-only imports, `reharness/meta` for meta-only.
- */
+/** reharness — a reasoning compiler: a request or a recorded trace → a deterministic FSM pipeline. */
 
-export * from "./core/index.js";
-export { getMetaCommands } from "./meta/index.js";
+export * from "./runtime/index.js";
+export * from "./compiler/index.js";

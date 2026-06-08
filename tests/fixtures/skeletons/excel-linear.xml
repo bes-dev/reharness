@@ -1,0 +1,148 @@
+<skeleton id="excel-parser" initial="parse" format-version="0.5">
+  <description>Parses an Alfa Bank .xlsx bank statement, aggregates expenses by category, and generates a Markdown report with personalised financial-literacy recommendations.</description>
+  <usage>&lt;xlsxPath&gt;</usage>
+  <inputs>
+    <arg name="xlsxPath" positional="true" required="true" />
+  </inputs>
+
+  <state name="parse" type="code" writes="data.error">
+    <contract><![CDATA[Read config.xlsxPath (path to the .xlsx file supplied by the user).
+      If the file does not exist or is unreadable, return ERROR immediately.
+
+      Write a Python 3 script named parse_xlsx.py to the output directory, then
+      execute it with `python3 <script> <config.xlsxPath>` and capture its stdout.
+      The script must use ONLY Python stdlib (zipfile + xml.etree.ElementTree) — no pip packages.
+
+      Script logic:
+        NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+        1. Open the xlsx as a ZIP archive.
+        2. Parse xl/sharedStrings.xml: build a list of strings indexed 0-based from all <t> elements.
+           Guard: if the member is absent (no string cells), use an empty list.
+        3. Parse xl/worksheets/sheet1.xml: iterate <row> elements.
+        4. Skip row 1 (header row). For each subsequent row extract cells by column letter
+           (use c.get('r')[:-len(row_number_digits)] to strip the row number — column letters only):
+             A → date (string dd.MM.yyyy)
+             G → description (string)
+             H → amount (float; t attr absent → numeric)
+             I → currency (string, default 'RUR')
+             J → status (string)
+             K → category (string; if empty or absent → 'Прочие расходы')
+             L → mcc (string)
+             M → tx_type (string)
+             P → cashback (float, default 0.0)
+           For cells with t="s" resolve through the shared-strings list.
+           Skip any row where column H is absent or empty (blank trailing rows).
+        5. Print a JSON array of transaction objects (one per data row) to stdout.
+
+      Parse the script's stdout as JSON and write it as transactions.json to the output directory.
+      Return DONE on success, ERROR if the Python script exits non-zero or stdout is not valid JSON.]]></contract>
+    <on event="DONE" target="analyze" />
+    <on event="ERROR" target="error" />
+  </state>
+
+  <state name="analyze" type="code" writes="data.error">
+    <contract><![CDATA[Read transactions.json from the parse stage output directory. Parse it as a JSON array of
+      transaction objects, each with fields: date, description, amount, currency, status,
+      category, mcc, tx_type, cashback.
+
+      1. Filter: keep only rows where tx_type === 'Списание' AND status === 'Выполнен'.
+         All other rows are ignored.
+
+      2. Compute grand total: sum of amount across all filtered rows.
+
+      3. Group filtered rows by category. For each category compute:
+           total      — sum of amount (float, 2 decimal places)
+           count      — number of transactions
+           share_pct  — (total / grandTotal * 100), rounded to 1 decimal place
+           transactions — array of { date, description, amount } objects
+
+      4. Compute across ALL transactions (not only filtered):
+           total_cashback — sum of cashback field (float, 2 decimal places)
+
+      5. Determine period from filtered transactions:
+           period_start — earliest date string (lexicographic min on dd.MM.yyyy, compare as
+                          parsed Date objects; output as original dd.MM.yyyy string)
+           period_end   — latest date string (same approach)
+
+      6. Write aggregation.json to the output directory with shape:
+         {
+           "period_start":    "dd.MM.yyyy",
+           "period_end":      "dd.MM.yyyy",
+           "total_expenses":  <number>,
+           "total_cashback":  <number>,
+           "total_count":     <number>,
+           "categories": {
+             "<category name>": {
+               "total":        <number>,
+               "count":        <number>,
+               "share_pct":    <number>,
+               "transactions": [{ "date": "...", "description": "...", "amount": <number> }]
+             }
+           }
+         }
+
+      Return DONE. Return ERROR if transactions.json is missing or unparseable.
+
+      Invariant (enforced by the downstream report stage, not here): sum of all category totals
+      must equal total_expenses — because every filtered transaction is assigned exactly one category.]]></contract>
+    <on event="DONE" target="report" />
+    <on event="ERROR" target="error" />
+  </state>
+
+  <state name="report" type="agent">
+    <contract><![CDATA[Read transactions.json from the parse stage output directory and aggregation.json from
+      the analyze stage output directory.
+
+      Generate report.md in your output directory. The report must be entirely in Russian,
+      contain only data present in the input files (NO invented figures), and be valid Markdown
+      (tables, headers, lists render correctly in standard Markdown viewers).
+
+      Required structure:
+
+      ## 1. Header section
+        # Анализ расходов по выписке
+        Period line: "Период: <period_start> — <period_end>"
+        "Всего расходов: <total_expenses formatted>"
+        "Кэшбэк за период: <total_cashback formatted>"
+        "Количество операций: <total_count>"
+
+      ## 2. Summary table (## Расходы по категориям)
+        Markdown table with columns: Категория | Сумма | % от итога | Кол-во операций
+        Rows sorted by total descending.
+        Each amount in "X ₽" format (space as thousands separator, ₽ symbol).
+        Last row: bold totals row (Итого | total_expenses | 100% | total_count).
+
+      ## 3. Per-category sections (one ## <category name> per category)
+        For each category (in the same descending-total order as the summary table):
+          - Subsection header: ## <category name>
+          - Markdown table listing every transaction: Дата | Описание | Сумма
+            (amounts formatted as above)
+          - Category subtotal line: "**Итого по категории: X ₽**"
+          - ### 💡 Рекомендации subsection with 2–4 concrete, actionable tips tailored to
+            that specific category and the actual spending observed (amounts, counts).
+            Tips must be in Russian. For categories not in the known list
+            (Цифровые товары, Финансовые операции, Ювелирные изделия, Прочие расходы),
+            provide a generic but relevant fallback tip — never leave any category without
+            recommendations.
+
+      ## 4. Final recommendations (## Итоговые рекомендации)
+        General financial-literacy section covering:
+          - Правило 50/30/20 (50% нужды, 30% желания, 20% накопления)
+          - Резервный фонд: 3–6 месяцев ежемесячных расходов на накопительном счёте
+          - Reference the actual cashback total (from aggregation.json) and advise
+            directing it to savings — use the real number, not a placeholder
+          - One practical tip about auditing recurring fees and duplicate card charges
+
+      Formatting rules (STRICT):
+        - ALL amounts in "22 800 ₽" format: integer part with spaces as thousands separators,
+          followed by a space and ₽ (U+20BD). NEVER use "руб.", "RUB", or comma as separator.
+        - No mention of income, account balance, or any figures absent from the input files.
+        - File encoding: UTF-8.
+        - Output only report.md — no other files.]]></contract>
+    <on event="DONE" target="done" />
+  </state>
+
+  <state name="done" type="final" status="success" />
+
+  <state name="error" type="final" status="error" />
+</skeleton>

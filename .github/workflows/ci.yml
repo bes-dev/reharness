@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["18", "20", "22"]
+    name: node ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - name: Build (tsc + copy agent prompts)
+        run: npm run build
+      - name: Dead-code gate (strict tsc)
+        run: node node_modules/typescript/lib/tsc.js --noEmit --noUnusedLocals --noUnusedParameters
+      - name: Unit + behaviour tests
+        run: npm test
+      # e2e (npm run e2e) is intentionally NOT here — it spawns a live agent backend (pi/claude + a model),
+      # which CI has no credentials for. It is run locally against a real backend before release.

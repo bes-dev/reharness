@@ -1,0 +1,275 @@
+<skeleton id="nitpicker" initial="ingest" format-version="0.5">
+  <description>Multi-model code review pipeline: parallel first-pass review, bounded debate rounds, merged findings with consensus tags, and a Markdown report.</description>
+  <usage>&lt;diff-file&gt; --models &lt;m1,m2,...&gt; [--context &lt;text&gt;] [--debate-rounds &lt;n&gt;]</usage>
+  <inputs>
+    <arg name="diff" positional="true" required="true" />
+    <arg name="models" type="list" required="true" />
+    <arg name="context" default="" />
+    <arg name="debate_rounds" type="number" default="2" />
+  </inputs>
+
+  <state name="ingest" type="code" writes="data.error_reason, data.trivial_reason">
+    <contract><![CDATA[Read the file at config.diff (a unified git diff in plain text).
+
+      Gate logic — return TRIVIAL (set data.trivial_reason to a descriptive string) if ANY of:
+        • the file is empty or contains no +/- content lines
+        • every changed file matches a trivial pattern:
+            lockfiles  → package-lock.json, yarn.lock, pnpm-lock.yaml, *.lock, go.sum, go.lock
+            generated  → dist/*, build/*, *.min.js, *.generated.*, vendor/*, __generated__/*
+            binary     → file header contains "Binary files" (git binary diff marker)
+
+      Return ERROR if config.models has fewer than 2 entries (set data.error_reason accordingly).
+
+      Otherwise return PROCEED and write to output dir:
+        • diff.txt          — the raw diff text verbatim
+        • file_manifest.json — JSON array of changed file paths extracted from the diff headers (lines starting with "diff --git a/…")]]></contract>
+    <on event="PROCEED" target="chunk" />
+    <on event="TRIVIAL" target="trivial_exit" />
+    <on event="ERROR" target="error" />
+  </state>
+
+  <state name="trivial_exit" type="code">
+    <contract><![CDATA[Read data.trivial_reason and config.models.
+      Write to output dir:
+        • findings.json — empty JSON array []
+        • report.md     — minimal Markdown:
+            # Code Review — No Substantive Changes
+            <blank line>
+            <data.trivial_reason>
+            <blank line>
+            ---
+            Models: <config.models joined by ", "> | Rounds: 0
+      Return DONE.]]></contract>
+    <on event="DONE" target="done" />
+  </state>
+
+  <state name="chunk" type="code" writes="data.chunk_count">
+    <contract><![CDATA[Read diff.txt from the ingest stage output.
+
+      Parse the unified diff into per-file sections (split on "diff --git" headers).
+      For each file section:
+        • If the section is ≤ 30 000 characters, emit it as a single chunk.
+        • If it exceeds 30 000 characters, split by hunk boundary ("@@ … @@") into sub-chunks,
+          each ≤ 30 000 characters. Mark every sub-chunk is_partial = true.
+        • If a single hunk exceeds 30 000 characters, record the file in the skipped list
+          (no chunk emitted for that file) with reason "single hunk exceeds context limit".
+
+      Pair every chunk with config.context (may be empty string) to form enriched review units.
+
+      Write to output dir:
+        • chunks.json       — JSON array of { chunk_id (string), file (string), hunk_index (number),
+                               content (string), context (string), is_partial (boolean) }
+        • skipped_files.json — JSON array of { file (string), reason (string) }; empty array if none.
+
+      Set data.chunk_count to the total number of chunks produced (integer).
+      Return DONE.]]></contract>
+    <on event="DONE" target="prepare" />
+    <on event="ERROR" target="error" />
+  </state>
+
+  <state name="prepare" type="code" writes="data.model_list">
+    <contract><![CDATA[Read config.models (array of model-identifier strings).
+      Set data.model_list to an array of objects in the same order:
+        [ { model: config.models[0] }, { model: config.models[1] }, … ]
+      Return DONE.]]></contract>
+    <on event="DONE" target="first_pass" />
+  </state>
+
+  <state name="first_pass" type="parallel" over="data.model_list" branch="reviewer" concurrency="8">
+    <on event="DONE" target="merge_first" />
+  </state>
+
+  <state name="reviewer" type="agent">
+    <contract><![CDATA[You are an expert code reviewer. You receive:
+        branchInput.model — your model identifier (already wired as your runtime model)
+        branchIndex       — your 0-based position in the model list
+
+      Read chunks.json from the chunk stage output. Review every chunk.
+
+      Rules:
+        • Only cite files that appear in chunks.json — do NOT invent file names.
+        • Only cite line numbers that exist within the chunk's +/- diff lines.
+        • Severity must be one of: critical, high, medium, low, nit — no other values.
+        • Category must be one of: bug, security, performance, style, correctness,
+          readability, maintainability.
+
+      Write findings.json to YOUR output directory:
+        JSON array of zero or more objects, each with exactly:
+          { file: string, line_range: [start, end], severity: string,
+            category: string, comment: string }
+      An empty array [] is valid if you find no issues.]]></contract>
+    <on event="DONE" target="done" />
+  </state>
+
+  <state name="merge_first" type="code" writes="data.failed_models">
+    <contract><![CDATA[Read findings.json from every reviewer branch output directory (one dir per branch).
+      For each branch directory, if findings.json is missing or unparseable, record that
+      branch's model identifier (data.model_list[branchIndex].model) in data.failed_models
+      (array of model-identifier strings; default []).
+
+      Collect all valid findings. Build a deduplication key per finding:
+        key = file + "::" + JSON.stringify(line_range) + "::" + category
+
+      Merge findings that share the same key into one entry:
+        • models: array of model identifiers that raised this finding (no duplicates)
+        • comment: take the comment from the highest-severity model's finding, or the first
+        • severity: take the most severe across duplicates; normalise to critical/high/medium/low/nit
+
+      Write merged_findings.json to output dir:
+        JSON array of { file, line_range, severity, category, comment, models }
+
+      Set data.failed_models (may be []).
+      Return DONE.]]></contract>
+    <on event="DONE" target="check_debate" />
+    <on event="ERROR" target="error" />
+  </state>
+
+  <state name="check_debate" type="switch">
+    <go target="debate_loop" guard="config.debate_rounds &gt; 0" />
+    <go target="tag_consensus" />
+  </state>
+
+  <state name="debate_loop" type="loop" max="10" exit="data.debate_converged">
+    <step state="debate_round" />
+    <step state="tally_debate" />
+    <on event="DONE" target="tag_consensus" />
+  </state>
+
+  <state name="debate_round" type="parallel" over="data.model_list" branch="debater" concurrency="8">
+    <on event="DONE" target="done" />
+  </state>
+
+  <state name="debater" type="agent">
+    <contract><![CDATA[You are a code reviewer in a structured multi-model debate. You receive:
+        branchInput.model — your model identifier (already wired as your runtime model)
+        branchIndex       — your 0-based position in the model list
+        data.iteration    — the 0-based debate round counter
+
+      Read the current merged findings:
+        • If data.iteration == 0 (first debate round), read merged_findings.json from
+          the merge_first stage output.
+        • Otherwise read merged_findings.json from the tally_debate stage output
+          (most recent iteration). The runtime injects both upstream directories.
+
+      SKIP all nit-level findings — treat them as already settled; do not debate them.
+
+      For each non-nit finding, decide ONE action:
+        "confirm"   — you agree this is a genuine issue
+        "retract"   — you believe this finding is wrong or out of scope (give reason)
+        "challenge" — you dispute another model's finding (give specific reason)
+        "add"       — a new issue not yet in the merged list (provide full finding object)
+
+      Write debate_updates.json to YOUR output directory:
+        JSON array of zero or more objects:
+          { finding_key: string   (file + "::" + JSON.stringify(line_range) + "::" + category),
+            action:      string   ("confirm" | "retract" | "challenge" | "add"),
+            reason:      string,
+            new_finding: object?  (only for action="add"; same schema as first-pass findings) }
+      An empty array [] is valid if you agree with everything.]]></contract>
+    <on event="DONE" target="done" />
+  </state>
+
+  <state name="tally_debate" type="code" writes="data.debate_converged">
+    <contract><![CDATA[Read debate_updates.json from every debater branch output directory (one dir per branch).
+      Read the current merged findings (merged_findings.json) from the most recent upstream
+      merge stage (merge_first for iteration 0, previous tally_debate output for later iterations).
+
+      Apply all updates to the findings set:
+        • "retract": remove the issuing model from that finding's models array.
+                     If models becomes empty, remove the finding entirely.
+        • "add":     insert new finding; if key already exists merge models arrays.
+        • "confirm" / "challenge": no structural change (record counts only for convergence check).
+
+      After applying: re-deduplicate by key and re-normalise severity (critical/high/medium/low/nit).
+
+      Write merged_findings.json to output dir (updated findings set).
+
+      Convergence: set data.debate_converged = true if EITHER:
+        (a) this round produced zero retractions AND zero new additions, OR
+        (b) data.iteration + 1 >= config.debate_rounds
+      Otherwise leave data.debate_converged false (or unset).
+
+      Return DONE.]]></contract>
+    <on event="DONE" target="done" />
+  </state>
+
+  <state name="tag_consensus" type="code" writes="data.rounds_completed">
+    <contract><![CDATA[Determine the source of final merged findings:
+        • If the debate loop ran (tally_debate output exists), read merged_findings.json from
+          the tally_debate stage output.
+        • Otherwise (check_debate routed here directly) read merged_findings.json from the
+          merge_first stage output.
+
+      Compute total_models = config.models.length
+                           - (data.failed_models ? data.failed_models.length : 0).
+
+      For each finding add a consensus field:
+        "agreed"    if finding.models.length === total_models
+        "majority"  if finding.models.length  > total_models / 2
+        "contested" otherwise
+
+      Write tagged_findings.json to output dir:
+        JSON array of findings with all fields (file, line_range, severity, category,
+        comment, models, consensus).
+
+      Set data.rounds_completed = (data.debate_converged !== undefined
+                                    ? data.iteration + 1
+                                    : 0).
+      Return DONE.]]></contract>
+    <on event="DONE" target="synthesize" />
+    <on event="ERROR" target="error" />
+  </state>
+
+  <state name="synthesize" type="agent">
+    <contract><![CDATA[Read tagged_findings.json from the tag_consensus stage output.
+      Read skipped_files.json from the chunk stage output.
+      Read file_manifest.json from the ingest stage output.
+
+      Validation before writing:
+        • Drop any finding whose file is NOT in file_manifest.json (guards against hallucinated files).
+        • Ensure every finding's severity is one of critical/high/medium/low/nit;
+          drop findings with invalid severity.
+
+      Write to YOUR output directory:
+
+      ── findings.json ──
+        Clean JSON array; every element has EXACTLY these fields (no extras):
+          file (string), line_range ([start, end] integers),
+          severity (critical|high|medium|low|nit),
+          category (string), comment (string),
+          models (array of model-identifier strings),
+          consensus (agreed|majority|contested)
+
+      ── report.md ──
+        A valid Markdown document with this structure:
+
+        1. "## Executive Summary" section containing:
+           - Table or bullet list: finding counts by severity (critical/high/medium/low/nit)
+           - Finding counts by consensus level (agreed/majority/contested)
+           - "**Models used:**" list from config.models
+           - "**Debate rounds completed:**" data.rounds_completed
+           - "**Failed models:**" data.failed_models (omit line if empty)
+
+        2. One "## <filename>" section per changed file that has findings,
+           sorted so files with higher-severity findings appear first.
+           Within each file section, findings are sorted severity-descending.
+           Each finding is rendered as a bullet:
+             `- [SEVERITY] L<start>–<end> · <category>: <comment>`
+             where SEVERITY badge is one of [CRITICAL] [HIGH] [MEDIUM] [LOW] [NIT].
+
+        3. "## Files Skipped / Partially Reviewed" section (omit if skipped_files.json is empty),
+           listing each entry from skipped_files.json with a ⚠ warning.
+
+        4. Horizontal rule footer:
+           `---`
+           `Models: <config.models joined> | Rounds: <data.rounds_completed>`
+
+        Do NOT include inline diff snippets.
+        Write no files other than findings.json and report.md.]]></contract>
+    <on event="DONE" target="done" />
+  </state>
+
+  <state name="done" type="final" status="success" />
+
+  <state name="error" type="final" status="error" />
+</skeleton>

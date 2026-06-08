@@ -2,3 +2,11 @@ node_modules/
 dist/
 *.tsbuildinfo
 research/
+
+# local / throwaway
+.claude/settings.local.json
+*.backup
+.DS_Store
+examples/
+tests/e2e/.work/
+REVIEW.md

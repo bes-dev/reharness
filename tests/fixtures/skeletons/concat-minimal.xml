@@ -1,0 +1,59 @@
+<skeleton id="concat" initial="validate" format-version="0.5">
+  <description>Concatenate two text files into one output file with newline-boundary normalisation.</description>
+  <usage>&lt;file1&gt; &lt;file2&gt; --output &lt;path&gt; [--encoding &lt;enc&gt;]</usage>
+  <inputs>
+    <arg name="file1" positional="true" required="true" />
+    <arg name="file2" positional="true" required="true" />
+    <arg name="output" required="true" />
+    <arg name="encoding" default="utf8" />
+  </inputs>
+
+  <state name="validate" type="code">
+    <contract><![CDATA[Read config.file1, config.file2, config.output, and config.encoding.
+
+      Perform all checks before taking any action:
+      1. Verify config.file1 exists and is readable (fs.accessSync with R_OK). If it fails,
+         emit a clear error message that names config.file1 and return INVALID.
+      2. Verify config.file2 exists and is readable in the same way. If it fails,
+         emit a clear error message that names config.file2 and return INVALID.
+      3. Resolve the absolute paths of config.file1, config.file2, and config.output using
+         path.resolve. If the resolved config.output equals the resolved config.file1 or
+         config.file2, emit an error describing the collision ("output path collides with
+         input path: <path>") and return INVALID.
+
+      If all three checks pass, return VALID. Write nothing to the output directory.]]></contract>
+    <on event="VALID" target="concat" />
+    <on event="INVALID" target="error" />
+  </state>
+
+  <state name="concat" type="code" writes="data.outputBytes">
+    <contract><![CDATA[Read config.file1, config.file2, config.output, and config.encoding.
+
+      Steps:
+      1. Read the full textual content of config.file1 as a string using config.encoding.
+      2. Read the full textual content of config.file2 as a string using config.encoding.
+      3. Newline normalisation: if content1 is non-empty and does NOT end with '\n',
+         append exactly one '\n' to content1. If content1 is empty or already ends with '\n',
+         leave it unchanged (do NOT insert an extra blank line).
+      4. Form the combined string: combined = content1 + content2.
+      5. Atomic write:
+         a. Determine a temporary file path in the same directory as config.output
+            (e.g. config.output + '.tmp.' + process.pid) to keep the rename on one filesystem.
+         b. Write combined to the temporary path using config.encoding.
+         c. Rename (fs.renameSync) the temporary path to the final config.output path.
+            This guarantees the output is either complete or absent — never partially written.
+      6. Compute the byte length of the written content (Buffer.byteLength(combined, config.encoding)).
+      7. Set c.data.outputBytes to that byte count.
+      8. Emit a success message: "Written <config.output> (<byteCount> bytes)".
+
+      Return DONE on success.
+      On any I/O error at any step (read, write, or rename), emit a human-readable error
+      message describing what failed and which path was involved, then return ERROR.]]></contract>
+    <on event="DONE" target="done" />
+    <on event="ERROR" target="error" />
+  </state>
+
+  <state name="done" type="final" status="success" />
+
+  <state name="error" type="final" status="error" />
+</skeleton>

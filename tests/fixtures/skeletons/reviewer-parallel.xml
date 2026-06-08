@@ -1,0 +1,181 @@
+<skeleton id="reviewer" initial="validate" format-version="0.5">
+  <description>Clone a GitHub repository, review its source code with an LLM, and create a single consolidated GitHub issue containing all findings.</description>
+  <usage>&lt;repo_url&gt;</usage>
+  <inputs>
+    <arg name="repo_url" positional="true" required="true" />
+  </inputs>
+
+  <state name="validate" type="code" writes="data.error, data.owner, data.repo">
+    <contract><![CDATA[Read config.repo_url.
+      Parse it as a https://github.com/<owner>/<repo> URL.
+      Set ctx.data.owner and ctx.data.repo to the extracted values.
+
+      Verify preconditions in order; on the first failure set ctx.data.error to a human-readable
+      message and emit FAIL — do no further work:
+        1. config.repo_url is present and matches https://github.com/<owner>/<repo> (no trailing .git required).
+        2. The GITHUB_TOKEN environment variable is non-empty.
+        3. Call GET https://api.github.com/repos/{owner}/{repo} with the token.
+           - If the response is not HTTP 200, fail with the status and message from the API body.
+           - If the response body has "has_issues": false, fail with "Repository has issues disabled."
+        4. Inspect the X-OAuth-Scopes response header; it must contain "repo" or "public_repo".
+           If absent or insufficient, fail with "GITHUB_TOKEN lacks required scope."
+
+      Never write GITHUB_TOKEN to any output file or log.
+      Emit PASS on success; emit FAIL on any precondition failure.]]></contract>
+    <on event="PASS" target="clone_repo" />
+    <on event="FAIL" target="error" />
+  </state>
+
+  <state name="clone_repo" type="code" reads="data.owner, data.repo" writes="data.error">
+    <contract><![CDATA[Build an authenticated clone URL from config.repo_url and GITHUB_TOKEN:
+        https://<GITHUB_TOKEN>@github.com/<owner>/<repo>.git
+      Keep this URL in memory only — never write it to any file.
+
+      Run:
+        git clone --depth 1 --single-branch <authenticated_url> <c.out()>/repo
+
+      On success write the file clone_ok.txt to c.out() (content: "ok") and emit DONE.
+      On git failure (non-zero exit) set ctx.data.error to the last 10 lines of stderr
+      and emit FAIL.]]></contract>
+    <on event="DONE" target="filter_files" />
+    <on event="FAIL" target="error" />
+  </state>
+
+  <state name="filter_files" type="code" writes="data.file_groups">
+    <contract><![CDATA[Walk the directory tree inside the clone_repo stage output (the repo/ subdirectory).
+
+      Exclude the following unconditionally:
+        - Directories: node_modules/, vendor/, .git/, __pycache__/, dist/, build/, .next/, coverage/
+        - Binary file extensions: .png .jpg .jpeg .gif .ico .webp .svg .woff .woff2 .ttf .eot
+          .pdf .zip .gz .tar .tgz .bz2 .xz .7z .rar .exe .dll .so .dylib .bin .class .pyc
+        - Lock files: package-lock.json, yarn.lock, pnpm-lock.yaml, poetry.lock, Cargo.lock,
+          composer.lock, Gemfile.lock, go.sum
+        - Minified files: *.min.js, *.min.css, *.bundle.js
+        - Files larger than 200 KB (204 800 bytes)
+
+      Collect relative paths (from the repo root) of all remaining files.
+
+      Group the collected files by their top-level directory component (files at the root form
+      their own "root" group). If a group exceeds ~320 KB of aggregate source content (≈80 K
+      tokens at 4 chars/token), split it into sub-groups of ≤320 KB each.
+
+      Set ctx.data.file_groups to an array of objects:
+        [{ "label": "<group name>", "files": ["relative/path/to/file", ...] }, ...]
+
+      Write file_groups.json to the output directory containing the same array.
+      Emit DONE.]]></contract>
+    <on event="DONE" target="review" />
+  </state>
+
+  <state name="review" type="parallel" over="data.file_groups" branch="review_chunk" concurrency="4">
+    <on event="DONE" target="aggregate" />
+  </state>
+
+  <state name="review_chunk" type="agent">
+    <contract><![CDATA[You receive branchInput = { label: string, files: string[] } describing one group of source
+      files to review, and branchIndex (the group's position in the list).
+
+      The files listed in branchInput.files are relative paths from the repository root. Read each
+      file's content from the clone_repo stage's output directory (under repo/).
+
+      Perform a thorough code review of all provided files. For every significant finding produce
+      a JSON object with the following fields:
+        {
+          "category": "security" | "correctness" | "style" | "question",
+          "description": "<concise explanation of the issue or question>",
+          "file": "<relative file path, or null if not file-specific>",
+          "line": <line number as integer, or null if not applicable>
+        }
+
+      Priorities:
+        1. security — vulnerabilities, exposed secrets, unsafe operations
+        2. correctness — bugs, logic errors, off-by-ones, unhandled errors
+        3. style — readability, naming, dead code, duplication (lowest priority)
+        4. question — ambiguous design decisions worth discussing
+
+      Rules:
+        - Do NOT include trivial whitespace or minor formatting nitpicks.
+        - Do NOT include findings for binary or generated files.
+        - Do NOT invent file paths you did not read.
+        - Every correctness/security finding MUST include a file path.
+
+      Write a single file findings.json to your output directory containing a JSON array of finding
+      objects. If no findings exist for this group, write an empty array [].
+      No prose outside the JSON array.]]></contract>
+  </state>
+
+  <state name="aggregate" type="code" writes="data.total_findings">
+    <contract><![CDATA[Read findings.json from each review_chunk branch output directory (via c.dirs('review_chunk')).
+      Parse each file as a JSON array of finding objects.
+      Concatenate all arrays into a single flat array, preserving every finding.
+      Set ctx.data.total_findings to the total count of findings across all branches.
+      Write all_findings.json to the output directory containing the merged array.
+      Emit DONE.]]></contract>
+    <on event="DONE" target="compile_issue" />
+  </state>
+
+  <state name="compile_issue" type="code" reads="data.owner, data.repo" writes="data.truncated_count">
+    <contract><![CDATA[Read all_findings.json from the aggregate stage's output directory.
+
+      Deduplicate: remove findings whose (category + description + file) are identical after
+      lowercasing and trimming all three fields. Keep the first occurrence.
+
+      Sort by priority: security → correctness → style → question.
+      Within the same category, sort alphabetically by file then by line number.
+
+      Format each finding as a numbered Markdown checklist item:
+        N. [`file:line`] **[CATEGORY]** description
+        (omit the file:line link component if file is null; omit the :line part if line is null)
+
+      Build the complete Markdown issue body:
+        ## Automated Code Review Findings\n\n
+        <numbered list of findings>\n\n
+        ---\n
+        *Generated on YYYY-MM-DD by automated-reviewer. Repository: ctx.data.owner/ctx.data.repo.*
+
+      If the full body string exceeds 65 000 characters, truncate the findings list (remove items
+      from the end) until the body fits within 65 000 characters, then append:
+        \n\n---\n…and N more findings not shown.
+      Set ctx.data.truncated_count to the number of omitted findings (0 if none truncated).
+
+      Compute the issue title: "Automated code review — YYYY-MM-DD" (current UTC date).
+
+      Write to the output directory:
+        - issue_body.md   — the final Markdown body string
+        - issue_meta.json — { "title": "<title>", "owner": "<ctx.data.owner>",
+                              "repo": "<ctx.data.repo>", "truncated_count": <N> }
+      Emit DONE.]]></contract>
+    <on event="DONE" target="create_issue" />
+  </state>
+
+  <state name="create_issue" type="code" writes="data.error">
+    <contract><![CDATA[Read issue_body.md and issue_meta.json from the compile_issue stage's output directory.
+      Read ctx.data.owner and ctx.data.repo.
+
+      Attempt to POST https://api.github.com/repos/{owner}/{repo}/issues with:
+        {
+          "title": issue_meta.title,
+          "body":  <contents of issue_body.md>,
+          "labels": ["automated-review"]
+        }
+      Use the GITHUB_TOKEN environment variable as a Bearer token in the Authorization header.
+      Never write GITHUB_TOKEN to any file.
+
+      If the API returns 422 (label not found), retry the POST once without the "labels" field.
+
+      On HTTP 201 success:
+        - Write issue.json to the output directory:
+            { "url": <html_url>, "number": <number>, "owner": ctx.data.owner, "repo": ctx.data.repo }
+        - Emit DONE.
+
+      On any other non-201 response:
+        - Set ctx.data.error to "GitHub API error <status>: <message from response body>".
+        - Emit FAIL.]]></contract>
+    <on event="DONE" target="done" />
+    <on event="FAIL" target="error" />
+  </state>
+
+  <state name="done" type="final" status="success" />
+
+  <state name="error" type="final" status="error" />
+</skeleton>

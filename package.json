@@ -1,7 +1,26 @@
 {
   "name": "reharness",
-  "version": "0.3.0",
-  "description": "Deterministic multi-agent pipeline framework with self-evolving harness",
+  "version": "0.1.0",
+  "description": "A reasoning compiler — turn a natural-language request or a recorded agent trace into a deterministic FSM pipeline, with model judgment only at the leaves.",
+  "keywords": [
+    "reasoning-compiler",
+    "llm",
+    "ai-agents",
+    "agent",
+    "fsm",
+    "state-machine",
+    "workflow",
+    "compiler",
+    "pipeline",
+    "programming-by-demonstration"
+  ],
+  "author": "bes-dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bes-dev/reharness.git"
+  },
+  "homepage": "https://github.com/bes-dev/reharness#readme",
+  "bugs": "https://github.com/bes-dev/reharness/issues",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,41 +29,39 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./core": {
-      "types": "./dist/core/index.d.ts",
-      "default": "./dist/core/index.js"
+    "./runtime": {
+      "types": "./dist/runtime/index.d.ts",
+      "default": "./dist/runtime/index.js"
     },
-    "./meta": {
-      "types": "./dist/meta/index.d.ts",
-      "default": "./dist/meta/index.js"
+    "./compiler": {
+      "types": "./dist/compiler/index.d.ts",
+      "default": "./dist/compiler/index.js"
     }
   },
   "bin": {
-    "reharness": "dist/cli.js",
-    "reharness-mcp": "dist/integrations/mcp-server.js"
+    "reharness": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc && rm -rf dist/meta/agents dist/meta/references && cp -r src/meta/agents dist/meta/agents && cp -r src/meta/references dist/meta/references && chmod +x dist/cli.js dist/integrations/mcp-server.js",
-    "dev": "tsc --watch",
+    "build": "node node_modules/typescript/lib/tsc.js && mkdir -p dist/compiler/agents && rm -f dist/compiler/agents/*.md && cp src/compiler/agents/*.md dist/compiler/agents/ && chmod +x dist/cli.js",
+    "test": "node --import tsx --test $(find tests -name '*.test.ts')",
+    "e2e": "npm run build && node --import tsx tests/e2e/evolve.mts",
+    "dev": "node node_modules/typescript/lib/tsc.js --watch",
     "prepublishOnly": "npm run build"
   },
   "files": [
     "dist",
-    "integrations",
-    "AGENTS.md",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "license": "Apache-2.0",
-  "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.74.0",
-    "@mariozechner/pi-tui": "^0.70.6",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "tsx": "^4.21.0",
-    "zod": "^4.4.3"
+  "engines": {
+    "node": ">=18"
   },
-  "devDependencies": {
+  "dependencies": {
     "@types/node": "^20.0.0",
+    "fast-xml-parser": "^5.8.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.0.0"
   }
 }
