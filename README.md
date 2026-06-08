@@ -1,5 +1,7 @@
 # reharness
 
+[![npm](https://img.shields.io/npm/v/reharness)](https://www.npmjs.com/package/reharness) [![license](https://img.shields.io/npm/l/reharness)](LICENSE)
+
 **A reasoning compiler.** Spend a model's intelligence *once*, at compile time, to turn a natural-language request — or a recorded agent trace — into a deterministic finite-state-machine pipeline. Most of the pipeline is ordinary code; only a few clearly-marked **agent** leaves call a model at runtime. The compiled artifact is a persistent, version-controllable directory you can read, test, and ship — and a fully-mechanical task compiles all the way down to **zero runtime model calls** (`0 agent runs · 0 tokens · $0.0000`).
 
 The human approves the **intent** (a short PRD), never the generated graph. Inter-stage data flow is derived from the topology, not declared. Backends are pluggable (Pi / Claude Code), so you can run the agents on a subscription instead of paying per token.
@@ -9,6 +11,8 @@ The human approves the **intent** (a short PRD), never the generated graph. Inte
 ```bash
 npm install -g reharness
 ```
+
+Package: **[npmjs.com/package/reharness](https://www.npmjs.com/package/reharness)**.
 
 reharness runs its agent leaves on a pluggable **backend** — install at least one and put it on `PATH`:
 
