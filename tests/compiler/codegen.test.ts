@@ -138,3 +138,15 @@ test("a wait state's timeout is not double-parsed (one XML attr, one timeoutMs)"
   assert.equal((serializeSkeletonXML(sk).match(/timeout=/g) || []).length, 1);   // no duplicate attr (valid XML)
   assert.equal((emitCommand(sk, []).match(/timeoutMs:/g) || []).length, 1);      // no duplicate key (compiles)
 });
+
+test("a <go> with both guard and retries-key survives parse→serialize→codegen (no silent drop)", () => {
+  const xml = `<skeleton id="t" initial="a"><state name="a" type="switch">` +
+    `<go guard="data.has_blocking == &quot;yes&quot;" retries-key="cf" retries-max="2" target="a"/>` +
+    `<go target="b"/></state><state name="b" type="final" status="success"/></skeleton>`;
+  const sk = parseSkeletonXML(xml);
+  const ser = serializeSkeletonXML(sk);
+  assert.ok(ser.includes("guard=") && ser.includes('retries-key="cf"') && ser.includes('retries-max="2"'),
+    "serialize must keep the condition AND the bound together");
+  const code = emitCommand(sk, []);
+  assert.match(code, /\(c\.data\.has_blocking == "yes"\) && c\.retries\('cf'\) < 2/);
+});

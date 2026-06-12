@@ -6,7 +6,7 @@ import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { loadProject } from "./runtime/project.js";
 import type { Pipeline, Project, RunOptions } from "./runtime/types.js";
-import { runCompile, runAmend, runEvolve, runGraph } from "./compiler/runner.js";
+import { runCompile, runAmend, runEvolve, runGraph, terminalApprovalHandler } from "./compiler/runner.js";
 import { RESERVED_IDS } from "./compiler/schema.js";
 import { ansi, emit, formatDuration } from "./term.js";
 
@@ -22,7 +22,7 @@ const VERSION: string = (() => {
 
 /** Parsed flags. Verb handlers read what they need from this bag. */
 interface Opts {
-  piModel?: string; provider?: string; name?: string; fromSession?: string; out?: string;
+  piModel?: string; provider?: string; name?: string; fromSession?: string; fromHarness?: string; out?: string;
   autoApprove: boolean; resume: boolean; fast: boolean; noEnhance: boolean; evolveAfter: boolean; html: boolean; dryRun: boolean;
   flagParams: Record<string, number>; fileParams: Record<string, number>; // --param wins over a --params profile
 }
@@ -34,7 +34,7 @@ interface Verb {
 
 const VERBS: Verb[] = [
   { name: "compile", usage: "<description>", desc: "compile a new workflow from a description (approval checkpoint; --auto-approve / --from-session)",
-    run: (rest, cwd, o, overrides) => runCompile({ cwd, input: rest.join(" "), autoApprove: o.autoApprove, piModel: o.piModel, fast: o.fast, noEnhance: o.noEnhance, name: o.name, fromSession: o.fromSession, overrides, provider: o.provider }) },
+    run: (rest, cwd, o, overrides) => runCompile({ cwd, input: rest.join(" "), autoApprove: o.autoApprove, piModel: o.piModel, fast: o.fast, noEnhance: o.noEnhance, name: o.name, fromSession: o.fromSession, fromHarness: o.fromHarness, overrides, provider: o.provider }) },
   { name: "amend", usage: "[<command>] <request>", desc: "amend a compiled command with a new feature (name the command if several)",
     run: (rest, cwd, o, overrides) => runAmend({ cwd, input: rest.join(" "), autoApprove: o.autoApprove, piModel: o.piModel, fast: o.fast, noEnhance: o.noEnhance, overrides, provider: o.provider }) },
   { name: "evolve", usage: "[<command>]", desc: "learn from the last run: self-heal failures, amortize routines into tools, refine skills",
@@ -54,6 +54,7 @@ const OPTIONS: Opt[] = [
   { names: ["--provider"], arg: "<id>", desc: "agent backend: pi (default) | claude — 'claude' drives leaves via a Claude Code subscription", apply: (o, v) => { o.provider = v; } },
   { names: ["--name"], arg: "<name>", desc: "name the compiled command yourself (compile only; default: auto-derived)", apply: (o, v) => { o.name = v; } },
   { names: ["--from-session"], arg: "<path>", desc: "compile from a recorded session file/dir (with compile)", apply: (o, v) => { o.fromSession = v; } },
+  { names: ["--from-harness"], arg: "<dir>", desc: "compile from an existing harness/implementation directory (research explores it in place)", apply: (o, v) => { o.fromHarness = v; } },
   { names: ["-o", "--output"], arg: "<file>", desc: "graph: output filename (default <command>.mmd/.html; `-` = stdout)", apply: (o, v) => { o.out = v; } },
   { names: ["--auto-approve"], desc: "resolve approval checkpoints via auto-event", apply: (o) => { o.autoApprove = true; } },
   { names: ["--resume"], desc: "resume the latest interrupted run", apply: (o) => { o.resume = true; } },
@@ -109,7 +110,10 @@ async function main() {
   const pipeline = def.run(rest.slice(1), { root: project.root, agents: project.agents, cwd: project.root });
   if (!pipeline?.run) { console.error(`"${rest[0]}" returned no pipeline`); process.exit(1); }
 
-  const code = await runPipeline(pipeline, { resume: o.resume, piModel: o.piModel, overrides, provider: o.provider, dryRun: o.dryRun });
+  // Approvals in a compiled command resolve via --auto-approve (auto-event) or, interactively, the terminal
+  // handler — without either, an `approval` node fails loud. Both are wired here so a compiled pipeline with
+  // human checkpoints runs in both modes (previously only the compiler pipeline's approvals were handled).
+  const code = await runPipeline(pipeline, { resume: o.resume, piModel: o.piModel, overrides, provider: o.provider, dryRun: o.dryRun, autoApprove: o.autoApprove, approvalHandler: terminalApprovalHandler });
   // Continuous loop (opt-in): every run already persists a verdict; with --evolve, act on it now (self-heal /
   // amortize / refine). Off by default — evolve spawns agents, so acting every run is opt-in for cost.
   if (o.evolveAfter) await runEvolve({ cwd, piModel: o.piModel, command: rest[0], overrides, provider: o.provider });

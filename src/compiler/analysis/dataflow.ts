@@ -40,7 +40,7 @@ export function configFlowErrors(sk: Skeleton, libSource?: string): string[] {
   const add = (field: string, where: string) => { if (!used.has(field)) used.set(field, where); };
   const exprConfig = (guard: string | undefined, where: string) => {
     const g = parseGuard(guard);
-    if (g?.kind === "expr") for (const c of configRefs(g.expr)) add(c, where);
+    if (g?.kind === "expr" || g?.kind === "expr-retries") for (const c of configRefs(g.expr)) add(c, where);
   };
 
   for (const [name, st] of Object.entries(sk.states)) {
@@ -64,7 +64,7 @@ export function configFlowErrors(sk: Skeleton, libSource?: string): string[] {
 
 function guardRefs(guard?: string): string[] {
   const g = parseGuard(guard);
-  return g?.kind === "expr" ? dataRefs(g.expr) : [];
+  return (g?.kind === "expr" || g?.kind === "expr-retries") ? dataRefs(g.expr) : [];
 }
 
 /** ctx.data keys a node DEFINITELY sets. Only code/set states write ctx.data (agents move data through the

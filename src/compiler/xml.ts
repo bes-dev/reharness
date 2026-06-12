@@ -205,8 +205,11 @@ function parseBranches(gos: any[]): GuardedTransition[] {
     const retryKey = g["@_retries-key"];
     const retryMax = g["@_retries-max"];
     const expr = g["@_guard"];
-    // Best-effort: prefer retries if both are present; validateSkeleton checks guard validity.
-    if (retryKey && retryMax) gt.guard = formatGuard({ kind: "retries", key: String(retryKey), max: Number(retryMax) });
+    // A `<go>` may carry a condition (`guard=`), a bound (`retries-key/max`), or BOTH — a conditional bounded
+    // back-edge (the fix-loop pattern: take this edge WHILE <expr> AND under the retry cap). Preserve both; never
+    // silently drop one (that loses the design's intent — see the expr-retries kind).
+    if (retryKey && retryMax && expr) gt.guard = formatGuard({ kind: "expr-retries", key: String(retryKey), max: Number(retryMax), expr: String(expr) });
+    else if (retryKey && retryMax) gt.guard = formatGuard({ kind: "retries", key: String(retryKey), max: Number(retryMax) });
     else if (expr) gt.guard = formatGuard({ kind: "expr", expr: String(expr) });
     return gt;
   });
@@ -342,6 +345,7 @@ function emitGo(gt: GuardedTransition): string {
   const g = parseGuard(gt.guard);
   if (g?.kind === "retries") parts.push(`retries-key="${g.key}"`, `retries-max="${g.max}"`);
   else if (g?.kind === "expr") parts.push(`guard="${esc(g.expr)}"`);
+  else if (g?.kind === "expr-retries") parts.push(`guard="${esc(g.expr)}"`, `retries-key="${g.key}"`, `retries-max="${g.max}"`);
   return `<go ${parts.join(" ")} />`;
 }
 

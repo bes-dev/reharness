@@ -409,6 +409,8 @@ function emitBranch(gt: GuardedTransition): string {
   const g = parseGuard(gt.guard);
   if (g?.kind === "retries") return `{ target: '${gt.target}', guard: (c) => c.retries('${g.key}') < ${g.max} }`;
   if (g?.kind === "expr") return `{ target: '${gt.target}', guard: (c) => (${compileGuardExpr(g.expr)}) }`;
+  // Conditional bounded back-edge: take it WHILE the condition holds AND the retry counter is under max.
+  if (g?.kind === "expr-retries") return `{ target: '${gt.target}', guard: (c) => (${compileGuardExpr(g.expr)}) && c.retries('${g.key}') < ${g.max} }`;
   return `{ target: '${gt.target}' }`;
 }
 
@@ -421,7 +423,7 @@ function retryKeysOf(on: Record<string, string | GuardedTransition[]>): Array<{ 
     if (!Array.isArray(target)) continue;
     for (const t of target) {
       const g = parseGuard(t.guard);
-      if (g?.kind === "retries") { out.push({ event, key: g.key }); break; }
+      if (g?.kind === "retries" || g?.kind === "expr-retries") { out.push({ event, key: g.key }); break; }
     }
   }
   return out;

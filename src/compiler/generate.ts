@@ -53,6 +53,9 @@ export interface GenerateOptions {
   /** Session front (`compile --from-session`): the runner has staged the raw session at the scratch `session.md`;
    *  the pipeline distils it into a PRD instead of authoring one from a description. */
   session?: boolean;
+  /** Harness front (`compile --from-harness <dir>`): absolute path to an existing harness/implementation directory
+   *  the `research` agent explores in place as a grounding source. Empty string ⇒ no harness. */
+  harness?: string;
 }
 
 // The runtime tells EVERY agent to "write all outputs to your output dir", but the PRD and skills are DURABLE
@@ -73,8 +76,12 @@ export function recoverPrd(target: string, c: StateContext): boolean {
 /** Recover any skill docs the agent wrote into its output dir to the canonical reharness/skills/ (best-effort). */
 export function recoverSkills(target: string, c: StateContext): void {
   const out = c.out(), skillsDir = resolve(target, SKILLS);
-  for (const f of (existsSync(out) ? readdirSync(out) : []))
-    if (f.endsWith(".md")) { mkdirSync(skillsDir, { recursive: true }); copyFileSync(resolve(out, f), resolve(skillsDir, f)); }
+  // An agent may drop a skill at the TOP of its out dir ("write to your output dir") OR at the prompt's literal
+  // project path `reharness/skills/<topic>.md` (a nested subdir inside out). Recover from BOTH so a skill is
+  // never stranded — without this, a research run that follows the path literally writes skills enhance can't see.
+  for (const src of [out, resolve(out, SKILLS)])
+    for (const f of (existsSync(src) ? readdirSync(src) : []))
+      if (f.endsWith(".md")) { mkdirSync(skillsDir, { recursive: true }); copyFileSync(resolve(src, f), resolve(skillsDir, f)); }
 }
 
 /**
@@ -124,7 +131,7 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
   };
 
   return definePipeline({
-    config: { target, input: opts.input, fast, autoApprove, amend: !!opts.amend, name: opts.name ?? "", command: opts.command ?? "", session: !!opts.session },
+    config: { target, input: opts.input, fast, autoApprove, amend: !!opts.amend, name: opts.name ?? "", command: opts.command ?? "", session: !!opts.session, harness: opts.harness ?? "" },
     initial: "start",
     cwd: target,
     agents: BUILTIN_AGENTS_DIR,
@@ -278,10 +285,15 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
         entry: async (c) => {
           mkdirSync(resolve(target, SKILLS), { recursive: true });
           const trace = c.data.sessionDoc as string | undefined; // set by load_session/merge_digest on the session front
-          // Evidence to ground from. (A future harness front adds the harness dir here as another source.)
+          // Evidence to ground from — the request, a recorded session, and/or an existing harness directory the
+          // agent EXPLORES IN PLACE with its file tools (not flattened): it reads the orchestration spec, follows
+          // subagent/tool references to the per-step agent definitions, and reads their skills — so the grounding
+          // preserves the harness's real structure (which agent → which role, which skill → which step).
+          const harness = c.config.harness as string;
           const evidence = [
             c.config.input ? `the user's REQUEST/task: ${c.config.input}` : "",
             trace ? `a RECORDED SESSION (a demonstration — observed ground truth) at ${trace}` : "",
+            harness ? `an existing HARNESS/implementation to STUDY at the directory ${harness} — explore it with your file tools (ls/read/grep): read the top-level orchestration spec, FOLLOW its subagent/tool references to the per-step agent definitions, and read each agent's skills. For each capability-bearing skill an agent carries, write its operative core (distilled) as its own reharness/skills/<topic>.md and note which step/leaf carries it — PRESERVE the skill content, don't just name it (enhance attaches only skills that exist in skills/)` : "",
           ].filter(Boolean).map((e) => `- ${e}`).join("\n");
           await c.agent("research",
             `Ground the domain(s) into one domain-skill per external integration/tool at ${SKILLS}/<topic>.md.\n\n` +
@@ -498,11 +510,16 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
             `(reharness/lib/${id}-states.ts).${dfNote} If a fix requires a topology change you cannot make in the ` +
             `leaves, write the one-line reason to ${ESCALATE} and stop (do not edit the skeleton).`,
             { append: "_fsm-syntax" });
-          if (existsSync(escalatePath) && readFileSync(escalatePath, "utf-8").trim()) {
+          const escalation = existsSync(escalatePath) ? readFileSync(escalatePath, "utf-8").trim() : "";
+          if (escalation) {
             c.emit("↻ polish: topology change needed → redesign");
+            // Carry the reason so the error terminal fails LOUD (invariant: total δ, no reasonless stall) when the
+            // bounded escalate→redesign budget is exhausted — mirrors how `verify` sets data.error before FAIL.
+            c.data.error = `polish escalated a topology change redesign could not resolve within ${CORRECTION_RETRIES} attempt(s): ${escalation.split("\n")[0].slice(0, 200)}`;
             c.retry("polish");
             return "ESCALATE";
           }
+          delete c.data.error; // polish succeeded — clear any stale escalation reason before proceeding to verify
           c.emit("✓ polish done");
           return "DONE";
         },

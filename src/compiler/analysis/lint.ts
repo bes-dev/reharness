@@ -253,7 +253,7 @@ function validateGuard(stateName: string, guard: string | undefined, errors: str
     errors.push(`State '${stateName}' guard '${guard}' invalid (expected 'retries:key<N' or 'expr:...')`);
     return;
   }
-  if (g.kind === "expr") {
+  if (g.kind === "expr" || g.kind === "expr-retries") {
     try { compileGuardExpr(g.expr); }
     catch (e: any) { errors.push(`State '${stateName}' guard expr invalid: ${e.message}`); }
   }

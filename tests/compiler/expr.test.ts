@@ -37,3 +37,21 @@ test("formatGuard ∘ parseGuard round-trips (single owner of the encoding)", ()
     assert.equal(formatGuard(parseGuard(s)!), s);
   }
 });
+
+test("parseGuard: combined condition+bound (conditional bounded back-edge / fix-loop)", () => {
+  // A `<go>` carrying BOTH guard= and retries-key/max — the canonical bounded fix-loop ("re-run IF blocking,
+  // at most N times"). Must NOT silently drop the condition (the bug that made the harness compile loop forever).
+  assert.deepEqual(parseGuard('retries:cf<2&&data.has_blocking == "yes"'),
+    { kind: "expr-retries", key: "cf", max: 2, expr: 'data.has_blocking == "yes"' });
+});
+
+test("formatGuard ∘ parseGuard round-trips the combined kind (single owner)", () => {
+  const s = 'retries:cf<2&&data.has_blocking == "yes"';
+  assert.equal(formatGuard(parseGuard(s)!), s);
+});
+
+test("combined guard lowers to (expr) && retries < max", () => {
+  const g = parseGuard('retries:cf<2&&data.x == "y"')!;
+  assert.equal(g.kind, "expr-retries");
+  if (g.kind === "expr-retries") assert.equal(compileGuardExpr(g.expr), 'c.data.x == "y"');
+});
