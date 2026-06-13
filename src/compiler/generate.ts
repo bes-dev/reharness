@@ -11,7 +11,7 @@ import { loadSkeletons, loadSkeletonIds } from "./project-fs.js";
 import { layout } from "../layout.js";
 import { deriveManifest } from "./manifest.js";
 import { verifyGenerated } from "./verify.js";
-import { SESSION_CHUNK_CHARS, LIGHT_MODEL, COMPILER_CONCURRENCY, CORRECTION_RETRIES } from "../config.js";
+import { SESSION_CHUNK_CHARS, LIGHT_MODEL, COMPILER_CONCURRENCY, CORRECTION_RETRIES, POLISH_IDLE_MS, POLISH_MAX_MS } from "../config.js";
 
 const BUILTIN_AGENTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "agents");
 
@@ -504,12 +504,23 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
           if (existsSync(escalatePath)) writeFileSync(escalatePath, "");
           const dfNote = existsSync(dataflowErrorsPath) && readFileSync(dataflowErrorsPath, "utf-8").trim()
             ? ` Also resolve the data-flow issues listed in reharness/.cache/scratch/dataflow-errors.md.` : "";
-          await c.agent("polish",
-            `Review the generated pipeline (reharness/.cache/scratch/_compiled.md) against the approved PRD at ${PRD}, ` +
-            `then fix what genuinely needs fixing — editing ONLY agent prompts (reharness/agents/${id}/<name>/SYSTEM.md) and code ` +
-            `(reharness/lib/${id}-states.ts).${dfNote} If a fix requires a topology change you cannot make in the ` +
-            `leaves, write the one-line reason to ${ESCALATE} and stop (do not edit the skeleton).`,
-            { append: "_fsm-syntax" });
+          try {
+            await c.agent("polish",
+              `Review the generated pipeline (reharness/.cache/scratch/_compiled.md) against the approved PRD at ${PRD}, ` +
+              `then fix what genuinely needs fixing — editing ONLY agent prompts (reharness/agents/${id}/<name>/SYSTEM.md) and code ` +
+              `(reharness/lib/${id}-states.ts).${dfNote} If a fix requires a topology change you cannot make in the ` +
+              `leaves, write the one-line reason to ${ESCALATE} and stop (do not edit the skeleton).`,
+              // Watchdog instead of a blind total timeout: L1 idle kills polish only on SILENCE (a working pass
+              // streams, so a deep harness runs to completion); L3 maxMs is the non-extendable ceiling (a runaway
+              // that games liveness still dies). A trip throws "Agent killed: …" → caught below → fail loud.
+              { append: "_fsm-syntax", idleMs: POLISH_IDLE_MS, maxMs: POLISH_MAX_MS });
+          } catch (e: any) {
+            const msg = String(e?.message ?? e);
+            if (!/Agent killed/.test(msg)) throw e; // a real crash — let the FSM's active-state catch fail loud
+            c.emit(`⚠ ${msg}`);
+            c.data.error = `polish ${msg.replace(/^Agent killed: /, "")} — correction pass incomplete; pipeline NOT certified (raise REHARNESS_POLISH_* or simplify/split the harness).`;
+            return "TIMEOUT";
+          }
           const escalation = existsSync(escalatePath) ? readFileSync(escalatePath, "utf-8").trim() : "";
           if (escalation) {
             c.emit("↻ polish: topology change needed → redesign");
@@ -523,15 +534,28 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
           c.emit("✓ polish done");
           return "DONE";
         },
-        timeoutMs: 720_000,
         on: {
           DONE: "verify",
-          TIMEOUT: "verify", // hard backstop: proceed to the deterministic gate, partial fixes and all
+          // The watchdog killed polish (idle silence or hard ceiling) before it finished — so the analyzer's
+          // data-flow issues and review fixes may remain UNADDRESSED. `verify` only type-checks (tsc), so routing
+          // here to verify would silently certify an incomplete pipeline (how 24 data-flow flags once shipped on
+          // "verify passed"). Propagate a LOUD error instead — an unfinished correction never silently passes.
+          TIMEOUT: "polish_timeout",
           ESCALATE: [
             { target: "redesign", guard: (c) => c.retries("polish") < CORRECTION_RETRIES },
             { target: "error" },
           ],
         },
+      },
+
+      polish_timeout: {
+        entry: async (c) => {
+          if (!c.data.error) c.data.error =
+            "polish did not complete the correction pass — analyzer-flagged data-flow / review issues may remain " +
+            "unaddressed; pipeline NOT certified. Re-run compile (raise REHARNESS_POLISH_* / simplify / split).";
+          return "DONE";
+        },
+        on: { DONE: "error" },
       },
 
       verify: {

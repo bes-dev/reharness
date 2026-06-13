@@ -48,6 +48,34 @@ test("a success terminal persists status:'success' and no failedStage", async ()
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("a routed timeout is recorded in the verdict warnings (never silently swallowed)", { timeout: 8000 }, async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "rh-verdict-"));
+  const logsDir = resolve(dir, "logs");
+  const p = definePipeline({
+    config: {}, cwd: dir, logsDir, initial: "slow",
+    states: {
+      // entry hangs until its per-state timeout aborts it → routes TIMEOUT onward to a SUCCESS terminal.
+      slow: {
+        entry: (c: any) => new Promise<string>((_res, rej) => {
+          if (c.signal?.aborted) return rej(new Error("aborted"));
+          c.signal?.addEventListener("abort", () => rej(new Error("aborted")), { once: true });
+        }),
+        timeoutMs: 120, on: { TIMEOUT: "done" },
+      },
+      done: { type: "final", status: "success" },
+    },
+  });
+  try {
+    assert.equal(await p.run(() => {}), "success"); // the TIMEOUT route reached a success terminal...
+    const v = readVerdict(logsDir);
+    // ...yet the timeout must still be visible in the persisted verdict — a handled timeout is never invisible.
+    assert.ok(
+      Array.isArray(v.warnings) && v.warnings.some((w: any) => w.stage === "slow" && /timed out/.test(w.message)),
+      "a timeout routed onward must surface in the persisted verdict warnings",
+    );
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("a fully-deterministic (code-only) run records usage: 0 agents, $0 — the amortization invariant", async () => {
   const dir = mkdtempSync(resolve(tmpdir(), "rh-verdict-"));
   const logsDir = resolve(dir, "logs");

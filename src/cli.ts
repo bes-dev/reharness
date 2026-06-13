@@ -63,7 +63,7 @@ const OPTIONS: Opt[] = [
   { names: ["--evolve"], desc: "after running a command, auto-chain evolve on its verdict", apply: (o) => { o.evolveAfter = true; } },
   { names: ["--dry-run"], desc: "run a command WITHOUT spawning agents/shells — smoke-test routing & data flow (no tokens)", apply: (o) => { o.dryRun = true; } },
   { names: ["--html"], desc: "graph: emit a self-contained interactive viewer instead of Mermaid", apply: (o) => { o.html = true; } },
-  { names: ["--param"], arg: "<s.k=v>", desc: "override a pipeline knob for this run: state.{max|concurrency|timeoutMs}=<number> (repeatable)", apply: (o, v) => addParam(o.flagParams, v) },
+  { names: ["--param"], arg: "<s.k=v>", desc: "override a pipeline knob for this run: state.{max|concurrency|timeoutMs|idleMs|maxMs|maxUsd|maxTokens}=<number> (repeatable)", apply: (o, v) => addParam(o.flagParams, v) },
   { names: ["--params"], arg: "<file>", desc: "load a JSON profile of overrides ({ \"state.knob\": number }); --param flags win over it", apply: (o, v) => Object.assign(o.fileParams, loadParamsFile(v)) },
 ];
 
