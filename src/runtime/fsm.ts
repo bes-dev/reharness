@@ -16,7 +16,7 @@ import { type SavedState, save, load, findResumableRun, pruneRuns } from "./pers
 import { makeWorkspace } from "./workspace.js";
 import { validate } from "./validate.js";
 import { redact } from "./redact.js";
-import { SHELL_TIMEOUT_MS, POLL_MS, PROVIDER, RUN_RETENTION } from "../config.js";
+import { SHELL_TIMEOUT_MS, POLL_MS, PROVIDER, RUN_RETENTION, AGENT_IDLE_MS, AGENT_MAX_MS, AGENT_MAX_USD, AGENT_MAX_TOKENS } from "../config.js";
 import { layout } from "../layout.js";
 
 /**
@@ -124,14 +124,14 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
     // site falls back to the compiled value when unset. Validated up-front (fail-loud) so a bad override never
     // reaches the loop — in particular a loop `max` override stays a finite integer ≥1 (the termination invariant).
     const overrides = opts.overrides || {};
-    const param = (st: string, knob: "max" | "concurrency" | "timeoutMs"): number | undefined => overrides[`${st}.${knob}`];
+    const param = (st: string, knob: "max" | "concurrency" | "timeoutMs" | "idleMs" | "maxMs" | "maxUsd" | "maxTokens"): number | undefined => overrides[`${st}.${knob}`];
     for (const key of Object.keys(overrides)) {
       const dot = key.lastIndexOf(".");
       const st = dot > 0 ? (def.states as Record<string, any>)[key.slice(0, dot)] : undefined;
       const knob = key.slice(dot + 1), v = overrides[key];
       const bad =
         !st ? `no such state "${key.slice(0, dot)}"`
-        : !["max", "concurrency", "timeoutMs"].includes(knob) ? `unknown knob "${knob}" (max | concurrency | timeoutMs)`
+        : !["max", "concurrency", "timeoutMs", "idleMs", "maxMs", "maxUsd", "maxTokens"].includes(knob) ? `unknown knob "${knob}" (max | concurrency | timeoutMs | idleMs | maxMs | maxUsd | maxTokens)`
         : typeof v !== "number" || !Number.isFinite(v) || v <= 0 ? `must be a positive number, got ${v}`
         : knob === "max" && (st.type !== "loop" || !Number.isInteger(v)) ? `loop 'max' needs an integer ≥1 on a loop state`
         : knob === "concurrency" && (st.type !== "parallel" || !Number.isInteger(v)) ? `'concurrency' needs an integer ≥1 on a parallel state`
@@ -222,11 +222,17 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
       const harness = loadHarness(agentsDir, name, c.warn);
       const merge = (a?: string[], b?: string[]) => { const m = [...(a ?? []), ...(b ?? [])]; return m.length ? m : undefined; };
 
+      // Per-leaf watchdog (the two-timer model): a `--param <name>.<knob>` override wins, else the caller's opts,
+      // else the global env default; 0 ⇒ undefined (disabled). idleMs waits on a working leaf; maxMs/maxUsd/maxTokens
+      // are the non-extendable ceilings.
+      const knob = (k: "idleMs" | "maxMs" | "maxUsd" | "maxTokens", def: number) => (param(name, k) ?? o?.[k] ?? def) || undefined;
       await runAgent({
         prompt: promptFile, task: task2, cwd, onLine: emit, onStatus, provider,
         logFile, piBinary, piModel: harness.model || o?.model || piModel, signal: sig,
         validate: o?.validate, appendPrompt: resolveAppend(o?.append),
         skills: merge(harness.skills, o?.skills), extensions: merge(harness.extensions, o?.extensions),
+        idleMs: knob("idleMs", AGENT_IDLE_MS), maxMs: knob("maxMs", AGENT_MAX_MS),
+        maxUsd: knob("maxUsd", AGENT_MAX_USD), maxTokens: knob("maxTokens", AGENT_MAX_TOKENS),
         onUsage: (u) => { usage.costUSD += u.costUSD; usage.tokensIn += u.tokensIn; usage.tokensOut += u.tokensOut; usage.agentRuns += 1; },
       });
       emit(`✓ ${name}`);
@@ -674,6 +680,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
           if (!tgt) return fail(`✗ approval "${current}" timed out (no TIMEOUT transition)`);
           const next = resolveTarget(tgt, ctx);
           if (!next) return fail(`✗ approval "${current}" TIMEOUT: no resolvable target`);
+          warnings.push({ stage: current, message: `timed out → routed to ${next} (correction may be incomplete)` });
           emit(`⚠ approval ${current} timed out → ${next}`);
           current = next;
           continue;
@@ -705,6 +712,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
           if (!state.on?.["TIMEOUT"]) return fail(`✗ parallel "${current}" timed out (no TIMEOUT transition)`);
           const next = resolveTarget(state.on["TIMEOUT"], ctx);
           if (!next) return fail(`✗ parallel "${current}" TIMEOUT: no target`);
+          warnings.push({ stage: current, message: `timed out → routed to ${next} (correction may be incomplete)` });
           emit(`⚠ parallel ${current} timed out → ${next}`);
           current = next; continue;
         }
@@ -730,6 +738,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
           if (!state.on?.["TIMEOUT"]) return fail(`✗ loop "${current}" timed out (no TIMEOUT transition)`);
           const next = resolveTarget(state.on["TIMEOUT"], ctx);
           if (!next) return fail(`✗ loop "${current}" TIMEOUT: no target`);
+          warnings.push({ stage: current, message: `timed out → routed to ${next} (correction may be incomplete)` });
           emit(`⚠ loop ${current} timed out → ${next}`);
           current = next; continue;
         }
@@ -779,6 +788,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
           if (!tgt) return fail(`✗ call "${current}" timed out (no TIMEOUT transition)`);
           const next = resolveTarget(tgt, ctx);
           if (!next) return fail(`✗ call "${current}" TIMEOUT: no target`);
+          warnings.push({ stage: current, message: `timed out → routed to ${next} (correction may be incomplete)` });
           emit(`⚠ call ${current} timed out → ${next}`);
           current = next; continue;
         }
@@ -808,6 +818,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
           if (!tgt) return fail(`✗ ${current} timed out (no TIMEOUT transition)`);
           const next = resolveTarget(tgt, ctx);
           if (!next) return fail(`✗ ${current} TIMEOUT: no target`);
+          warnings.push({ stage: current, message: `timed out → routed to ${next} (correction may be incomplete)` });
           emit(`⚠ ${current} timed out → ${next}`);
           current = next;
           continue;

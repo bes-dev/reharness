@@ -44,6 +44,13 @@ export interface AgentRunConfig {
   /** Backend adapter (Pi / Claude Code). Absent ⇒ Pi — so direct callers and tests are unchanged. */
   provider?: Provider;
   signal?: AbortSignal;
+  /** Per-leaf watchdog (the two-timer model). Each 0/undefined = disabled. idleMs = L1 liveness (kill on silence);
+   *  maxMs/maxUsd/maxTokens = L3 hard ceilings (non-extendable, span retries). A breach kills the leaf and fails
+   *  loud — never a retry. Resolved from config defaults + `--param` by the runtime; direct callers can set them. */
+  idleMs?: number;
+  maxMs?: number;
+  maxUsd?: number;
+  maxTokens?: number;
   /** Deterministic in-session validator: returns error strings (empty = ok). On failure the SAME live
    *  session is re-prompted with the errors so the agent self-corrects in-context. Triggers RPC mode. */
   validate?: () => string[] | Promise<string[]>;
@@ -65,6 +72,8 @@ interface ParseCallbacks {
   onLine?: (msg: string) => void;
   onStatus?: (text: string) => void;
   logFile?: string;
+  /** Watchdog heartbeat: called on every stream chunk so the idle timer treats any backend output as "alive". */
+  onBeat?: () => void;
 }
 
 interface TokenState { model?: string; tokensIn: number; tokensOut: number; costUSD: number; }
@@ -104,6 +113,7 @@ function parseJsonEventStream(stream: Readable, provider: Provider, cb: ParseCal
   return new Promise((res) => {
     let buf = "";
     stream.on("data", (chunk: Buffer | string) => {
+      cb.onBeat?.(); // any output = the leaf is alive → reset the idle watchdog
       buf += chunk.toString();
       const lines = buf.split("\n");
       buf = lines.pop() || "";
@@ -117,6 +127,35 @@ function parseJsonEventStream(stream: Readable, provider: Provider, cb: ParseCal
     stream.on("end", () => res());
     stream.on("error", () => res());
   });
+}
+
+interface WatchdogCfg { idleMs?: number; maxMs?: number; maxUsd?: number; maxTokens?: number; }
+
+/** The two-timer watchdog for an agent subprocess. L1 idle: no stream event for `idleMs` ⇒ the leaf is hung. L3
+ *  hard ceilings: wall-clock `maxMs`, cost `maxUsd`, tokens `maxTokens` — non-extendable, so a live-but-runaway
+ *  leaf ("playing solitaire") still dies. On a trip it kills the process and reports the reason; the caller fails
+ *  loud with it (never a retry). `base` carries spend/start already booked by earlier retries so ceilings span the
+ *  whole leaf. Every knob 0/undefined = disabled; with all disabled this is a no-op. `kick` is the heartbeat. */
+function armWatchdog(
+  proc: ReturnType<typeof spawn>, cfg: WatchdogCfg, ts: TokenState,
+  base: { usd: number; tokens: number; runStart: number }, onTrip: (reason: string) => void,
+): { kick: () => void; disarm: () => void } {
+  const { idleMs, maxMs, maxUsd, maxTokens } = cfg;
+  if (!idleMs && !maxMs && !maxUsd && !maxTokens) return { kick: () => {}, disarm: () => {} };
+  let last = Date.now();
+  const times = [idleMs, maxMs].filter((x): x is number => !!x);
+  const tick = Math.max(200, Math.min(...(times.length ? times : [2000]), 2000)); // fine enough for the smallest deadline
+  const timer = setInterval(() => {
+    const now = Date.now(), usd = base.usd + ts.costUSD, tok = base.tokens + ts.tokensIn + ts.tokensOut;
+    const reason =
+      idleMs && now - last > idleMs ? `stalled — no backend activity for ${Math.round((now - last) / 1000)}s (idle limit ${idleMs / 1000}s)`
+      : maxMs && now - base.runStart > maxMs ? `exceeded the wall-clock ceiling (${maxMs / 1000}s)`
+      : maxUsd && usd > maxUsd ? `exceeded the cost budget ($${usd.toFixed(4)} > $${maxUsd})`
+      : maxTokens && tok > maxTokens ? `exceeded the token budget (${tok} > ${maxTokens})`
+      : "";
+    if (reason) { clearInterval(timer); onTrip(reason); proc.kill("SIGTERM"); }
+  }, tick);
+  return { kick: () => { last = Date.now(); }, disarm: () => clearInterval(timer) };
 }
 
 /** Spawn an agent. With a validator → live RPC session with in-session re-prompting; otherwise one-shot (with a
@@ -139,12 +178,16 @@ export async function runAgent(config: AgentRunConfig): Promise<void> {
   // Cost is accumulated ACROSS attempts (each spawn is a fresh session, so a per-attempt total is summed) and
   // reported once — a retried leaf still records its full spend, and exactly one agent-run.
   const total: AgentUsage = { costUSD: 0, tokensIn: 0, tokensOut: 0 };
+  const runStart = Date.now();
   let lastCode = 1, lastStderr = "";
   try {
     for (let attempt = 0; ; attempt++) {
       const ts: TokenState = { tokensIn: 0, tokensOut: 0, costUSD: 0 };
-      const { code, stderr } = await oneshotAttempt(config, provider, binary, args, ts);
+      const base = { usd: total.costUSD, tokens: total.tokensIn + total.tokensOut, runStart };
+      const { code, stderr, trip } = await oneshotAttempt(config, provider, binary, args, ts, base);
       total.costUSD += ts.costUSD; total.tokensIn += ts.tokensIn; total.tokensOut += ts.tokensOut; total.model = ts.model || total.model;
+      // A watchdog trip (idle / wall-clock / cost / token ceiling) is a hard deterministic kill — fail loud, never retry.
+      if (trip) throw new Error(`Agent killed: ${trip}`);
       lastCode = code; lastStderr = stderr;
       if (config.signal?.aborted) throw new Error("Aborted");
       if (code === 0) return;
@@ -163,27 +206,36 @@ export async function runAgent(config: AgentRunConfig): Promise<void> {
 
 /** One one-shot spawn. Resolves with the exit code + collected stderr (never rejects on a non-zero exit — the
  *  caller decides retry-or-fail); rejects only on a spawn-level error (e.g. binary not found, mapped to a clear msg). */
-function oneshotAttempt(config: AgentRunConfig, provider: Provider, binary: string, args: string[], ts: TokenState): Promise<{ code: number; stderr: string }> {
+function oneshotAttempt(config: AgentRunConfig, provider: Provider, binary: string, args: string[], ts: TokenState, base: { usd: number; tokens: number; runStart: number }): Promise<{ code: number; stderr: string; trip?: string }> {
   return new Promise((res, rej) => {
     const proc = spawn(binary, args, { cwd: config.cwd, stdio: ["ignore", "pipe", "pipe"], env: process.env });
+    let trip: string | undefined;
     const onAbort = () => { if (config.logFile) appendFileSync(config.logFile, `\n[aborted]\n`); proc.kill("SIGTERM"); };
     config.signal?.addEventListener("abort", onAbort, { once: true });
 
-    const parsed = parseJsonEventStream(proc.stdout, provider, config, ts);
+    const wd = armWatchdog(proc, config, ts, base, (reason) => {
+      trip = reason;
+      config.onLine?.(`  ⚠ watchdog: ${reason} — killing leaf`);
+      if (config.logFile) appendFileSync(config.logFile, `\n[watchdog] ${reason}\n`);
+    });
+
+    const parsed = parseJsonEventStream(proc.stdout, provider, { onLine: config.onLine, onStatus: config.onStatus, logFile: config.logFile, onBeat: wd.kick }, ts);
     let stderrBuf = "";
     proc.stderr.on("data", (chunk: Buffer) => {
+      wd.kick();
       const text = chunk.toString();
       stderrBuf += text;
       if (config.logFile) appendFileSync(config.logFile, redact(`[stderr] ${text}`));
     });
 
     proc.on("close", async (code) => {
+      wd.disarm();
       config.signal?.removeEventListener("abort", onAbort);
       await parsed;
       if (config.logFile) appendFileSync(config.logFile, `\n[exit] code=${code ?? 1}\n`);
-      res({ code: code ?? 1, stderr: stderrBuf });
+      res({ code: code ?? 1, stderr: stderrBuf, trip });
     });
-    proc.on("error", (e) => { config.signal?.removeEventListener("abort", onAbort); rej(spawnError(provider, binary, e)); });
+    proc.on("error", (e) => { wd.disarm(); config.signal?.removeEventListener("abort", onAbort); rej(spawnError(provider, binary, e)); });
   });
 }
 
@@ -219,7 +271,18 @@ async function runAgentRpc(config: AgentRunConfig): Promise<void> {
   let spawnErr: Error | null = null;
   proc.on("error", (e) => { spawnErr = spawnError(provider, binary, e); const r = onTurnEnd; onTurnEnd = null; r?.(); });
 
+  // Same two-timer watchdog as one-shot (one live session, so base spend = 0). A trip kills the proc and releases
+  // any pending turn; awaitTurn surfaces the reason as a loud failure (never silently completes the turn).
+  let tripReason: string | undefined;
+  const wd = armWatchdog(proc, config, ts, { usd: 0, tokens: 0, runStart: Date.now() }, (reason) => {
+    tripReason = reason;
+    config.onLine?.(`  ⚠ watchdog: ${reason} — killing leaf`);
+    if (config.logFile) appendFileSync(config.logFile, `\n[watchdog] ${reason}\n`);
+    const r = onTurnEnd; onTurnEnd = null; r?.();
+  });
+
   proc.stdout.on("data", (chunk: Buffer | string) => {
+    wd.kick();
     buf += chunk.toString();
     const lines = buf.split("\n");
     buf = lines.pop() || "";
@@ -258,6 +321,7 @@ async function runAgentRpc(config: AgentRunConfig): Promise<void> {
   const nextTurn = () => new Promise<void>((res) => { onTurnEnd = res; });
   const awaitTurn = async (t: Promise<void>): Promise<void> => {
     await t;
+    if (tripReason) throw new Error(`Agent killed: ${tripReason}`); // watchdog trip — fail loud
     if (spawnErr) throw spawnErr;   // a clear "binary not found" beats a generic "exited before completing"
     if (aborted) throw new Error("Aborted");
     if (exited) throw new Error("Agent process exited before completing the turn");
@@ -290,6 +354,7 @@ async function runAgentRpc(config: AgentRunConfig): Promise<void> {
     if (attempts > 0) config.onLine?.(`  ✓ validation passed (${attempts} fix round(s))`);
     if (config.logFile) appendFileSync(config.logFile, `[validate] OK\n`);
   } finally {
+    wd.disarm();
     config.signal?.removeEventListener("abort", onAbort);
     try { proc.stdin.end(); } catch { /* already closed */ }
     proc.kill("SIGTERM"); // RPC mode is a long-lived server — terminate explicitly

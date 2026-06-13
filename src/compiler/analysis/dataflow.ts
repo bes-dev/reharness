@@ -40,7 +40,7 @@ export function configFlowErrors(sk: Skeleton, libSource?: string): string[] {
   const add = (field: string, where: string) => { if (!used.has(field)) used.set(field, where); };
   const exprConfig = (guard: string | undefined, where: string) => {
     const g = parseGuard(guard);
-    if (g?.kind === "expr") for (const c of configRefs(g.expr)) add(c, where);
+    if (g?.kind === "expr" || g?.kind === "expr-retries") for (const c of configRefs(g.expr)) add(c, where);
   };
 
   for (const [name, st] of Object.entries(sk.states)) {
@@ -64,7 +64,7 @@ export function configFlowErrors(sk: Skeleton, libSource?: string): string[] {
 
 function guardRefs(guard?: string): string[] {
   const g = parseGuard(guard);
-  return g?.kind === "expr" ? dataRefs(g.expr) : [];
+  return (g?.kind === "expr" || g?.kind === "expr-retries") ? dataRefs(g.expr) : [];
 }
 
 /** ctx.data keys a node DEFINITELY sets. Only code/set states write ctx.data (agents move data through the
@@ -121,8 +121,8 @@ function memberKey(node: ts.PropertyAccessExpression | ts.ElementAccessExpressio
   return ts.isStringLiteralLike(node.argumentExpression) ? node.argumentExpression.text : undefined;
 }
 
-/** Extract one code state's ctx.data reads/writes from its `<name>Entry` function body, over the AST. */
-function entryDataIO(body: ts.Block, ctx: string): { reads: string[]; writes: string[] } {
+/** Over a function body: the `<ctx>.data.<key>` keys ACCESSED, and the subset ASSIGNED (on the LHS of a `=`). */
+function fnDataIO(body: ts.Block, ctx: string): { accessed: Set<string>; assigned: Set<string> } {
   // Aliases of `<ctx>.data`: `const d = c.data` makes `d.x` mean `c.data.x`. (One hop; not transitive.)
   const aliases = new Set<string>();
   const collectAliases = (n: ts.Node): void => {
@@ -148,7 +148,23 @@ function entryDataIO(body: ts.Block, ctx: string): { reads: string[]; writes: st
     ts.forEachChild(n, visit);
   };
   visit(body);
-  return { reads: [...accessed].filter(k => !assigned.has(k)), writes: [...assigned] };
+  return { accessed, assigned };
+}
+
+/** Local top-level functions this body calls while threading the SAME ctx (`helper(c)` where `c` is `ctx`). The
+ *  ctx-arg guard keeps the interprocedural merge sound: a helper's `ctx.data` I/O is attributed to the caller only
+ *  when the caller passes ITS ctx as the helper's first argument (so the helper's `c.data` IS the caller's). */
+function calledLocals(body: ts.Block, ctx: string, localNames: Set<string>): Set<string> {
+  const out = new Set<string>();
+  const visit = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && localNames.has(n.expression.text)) {
+      const a0 = n.arguments[0];
+      if (a0 && ts.isIdentifier(a0) && a0.text === ctx) out.add(n.expression.text);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(body);
+  return out;
 }
 
 /**
@@ -157,21 +173,53 @@ function entryDataIO(body: ts.Block, ctx: string): { reads: string[]; writes: st
  * function: writes = keys on the LHS of a `<ctx>.data.<key> =`; reads = every other `<ctx>.data.<key>` access.
  * Unlike text scanning, this sees the string-literal form (`c.data["x"]`), reads the context parameter name
  * from the signature (not assumed to be `c`), follows a one-hop `const d = c.data` alias, and is bounded by the
- * real function body (a sibling top-level helper is NOT mis-attributed). Soundness: writes are UNDER-approximated
- * and reads OVER-approximated (a dynamic `c.data[expr]` key we cannot name is left out of writes), so the
- * downstream forward-MUST analysis never silently MISSES a genuinely-undefined read. (Interprocedural reads via
- * a called helper remain out of scope; agents touch only the file workspace, never ctx.data, so they have none.)
+ * real function body (a sibling top-level helper is NOT mis-attributed).
+ *
+ * **Interprocedural over local helpers.** A code state that factors its `ctx.data` writes into a local helper it
+ * calls (`stashFlags(c)`) is idiomatic, good hygiene — so the extraction follows local function calls that thread
+ * the same ctx (transitively, cycle-guarded) and folds the callee's `ctx.data` I/O into the caller's. WITHOUT this,
+ * a real write through a helper looks unwritten → a FALSE use-before-def, which the leaf-only `polish` cannot fix
+ * (the real fix is a skeleton `writes=` for a write that already happens) → a phantom that fails the compile.
+ *
+ * Soundness: writes are UNDER-approximated and reads OVER-approximated (a dynamic `c.data[expr]` key we cannot name
+ * is left out of writes; a cut cycle drops a helper's writes — the safe direction), so the downstream forward-MUST
+ * analysis never silently MISSES a genuinely-undefined read. (Agents touch only the file workspace, never ctx.data.)
  */
 export function extractCodeDataIO(libSource: string): Map<string, { reads: string[]; writes: string[] }> {
-  const out = new Map<string, { reads: string[]; writes: string[] }>();
   const sf = ts.createSourceFile("lib.ts", libSource, ts.ScriptTarget.Latest, true);
+  // Pass 1: index every top-level function decl (name → body + its ctx-param name).
+  const fns = new Map<string, { body: ts.Block; ctx: string }>();
   for (const stmt of sf.statements) {
     if (!ts.isFunctionDeclaration(stmt) || !stmt.name || !stmt.body) continue;
-    const m = /^(.+)Entry$/.exec(stmt.name.text);
-    if (!m) continue;
     const p0 = stmt.parameters[0]?.name;
-    const ctx = p0 && ts.isIdentifier(p0) ? p0.text : "c";
-    out.set(m[1], entryDataIO(stmt.body, ctx));
+    fns.set(stmt.name.text, { body: stmt.body, ctx: p0 && ts.isIdentifier(p0) ? p0.text : "c" });
+  }
+  const localNames = new Set(fns.keys());
+  const directIO = new Map<string, { accessed: Set<string>; assigned: Set<string> }>();
+  const callsOf = new Map<string, Set<string>>();
+  for (const [name, f] of fns) {
+    directIO.set(name, fnDataIO(f.body, f.ctx));
+    callsOf.set(name, calledLocals(f.body, f.ctx, localNames));
+  }
+  // Effective I/O = own ∪ callees' over the ctx-threaded call graph (cycle-guarded; helper graphs are tiny, no memo).
+  const resolve = (name: string, stack: Set<string>): { accessed: Set<string>; assigned: Set<string> } => {
+    const d = directIO.get(name) ?? { accessed: new Set<string>(), assigned: new Set<string>() };
+    const accessed = new Set(d.accessed), assigned = new Set(d.assigned);
+    const next = new Set(stack).add(name);
+    for (const callee of callsOf.get(name) ?? []) {
+      if (next.has(callee)) continue; // cycle: stop (dropping the callee's writes is the safe forward-MUST direction)
+      const c = resolve(callee, next);
+      c.accessed.forEach(k => accessed.add(k));
+      c.assigned.forEach(k => assigned.add(k));
+    }
+    return { accessed, assigned };
+  };
+  const out = new Map<string, { reads: string[]; writes: string[] }>();
+  for (const name of fns.keys()) {
+    const m = /^(.+)Entry$/.exec(name);
+    if (!m) continue;
+    const { accessed, assigned } = resolve(name, new Set());
+    out.set(m[1], { writes: [...assigned], reads: [...accessed].filter(k => !assigned.has(k)) });
   }
   return out;
 }

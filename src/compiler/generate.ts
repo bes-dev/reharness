@@ -11,7 +11,7 @@ import { loadSkeletons, loadSkeletonIds } from "./project-fs.js";
 import { layout } from "../layout.js";
 import { deriveManifest } from "./manifest.js";
 import { verifyGenerated } from "./verify.js";
-import { SESSION_CHUNK_CHARS, LIGHT_MODEL, COMPILER_CONCURRENCY, CORRECTION_RETRIES } from "../config.js";
+import { SESSION_CHUNK_CHARS, LIGHT_MODEL, COMPILER_CONCURRENCY, CORRECTION_RETRIES, POLISH_IDLE_MS, POLISH_MAX_MS } from "../config.js";
 
 const BUILTIN_AGENTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "agents");
 
@@ -53,6 +53,9 @@ export interface GenerateOptions {
   /** Session front (`compile --from-session`): the runner has staged the raw session at the scratch `session.md`;
    *  the pipeline distils it into a PRD instead of authoring one from a description. */
   session?: boolean;
+  /** Harness front (`compile --from-harness <dir>`): absolute path to an existing harness/implementation directory
+   *  the `research` agent explores in place as a grounding source. Empty string ⇒ no harness. */
+  harness?: string;
 }
 
 // The runtime tells EVERY agent to "write all outputs to your output dir", but the PRD and skills are DURABLE
@@ -73,8 +76,12 @@ export function recoverPrd(target: string, c: StateContext): boolean {
 /** Recover any skill docs the agent wrote into its output dir to the canonical reharness/skills/ (best-effort). */
 export function recoverSkills(target: string, c: StateContext): void {
   const out = c.out(), skillsDir = resolve(target, SKILLS);
-  for (const f of (existsSync(out) ? readdirSync(out) : []))
-    if (f.endsWith(".md")) { mkdirSync(skillsDir, { recursive: true }); copyFileSync(resolve(out, f), resolve(skillsDir, f)); }
+  // An agent may drop a skill at the TOP of its out dir ("write to your output dir") OR at the prompt's literal
+  // project path `reharness/skills/<topic>.md` (a nested subdir inside out). Recover from BOTH so a skill is
+  // never stranded — without this, a research run that follows the path literally writes skills enhance can't see.
+  for (const src of [out, resolve(out, SKILLS)])
+    for (const f of (existsSync(src) ? readdirSync(src) : []))
+      if (f.endsWith(".md")) { mkdirSync(skillsDir, { recursive: true }); copyFileSync(resolve(src, f), resolve(skillsDir, f)); }
 }
 
 /**
@@ -124,7 +131,7 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
   };
 
   return definePipeline({
-    config: { target, input: opts.input, fast, autoApprove, amend: !!opts.amend, name: opts.name ?? "", command: opts.command ?? "", session: !!opts.session },
+    config: { target, input: opts.input, fast, autoApprove, amend: !!opts.amend, name: opts.name ?? "", command: opts.command ?? "", session: !!opts.session, harness: opts.harness ?? "" },
     initial: "start",
     cwd: target,
     agents: BUILTIN_AGENTS_DIR,
@@ -278,10 +285,15 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
         entry: async (c) => {
           mkdirSync(resolve(target, SKILLS), { recursive: true });
           const trace = c.data.sessionDoc as string | undefined; // set by load_session/merge_digest on the session front
-          // Evidence to ground from. (A future harness front adds the harness dir here as another source.)
+          // Evidence to ground from — the request, a recorded session, and/or an existing harness directory the
+          // agent EXPLORES IN PLACE with its file tools (not flattened): it reads the orchestration spec, follows
+          // subagent/tool references to the per-step agent definitions, and reads their skills — so the grounding
+          // preserves the harness's real structure (which agent → which role, which skill → which step).
+          const harness = c.config.harness as string;
           const evidence = [
             c.config.input ? `the user's REQUEST/task: ${c.config.input}` : "",
             trace ? `a RECORDED SESSION (a demonstration — observed ground truth) at ${trace}` : "",
+            harness ? `an existing HARNESS/implementation to STUDY at the directory ${harness} — explore it with your file tools (ls/read/grep): read the top-level orchestration spec, FOLLOW its subagent/tool references to the per-step agent definitions, and read each agent's skills. For each capability-bearing skill an agent carries, write its operative core (distilled) as its own reharness/skills/<topic>.md and note which step/leaf carries it — PRESERVE the skill content, don't just name it (enhance attaches only skills that exist in skills/)` : "",
           ].filter(Boolean).map((e) => `- ${e}`).join("\n");
           await c.agent("research",
             `Ground the domain(s) into one domain-skill per external integration/tool at ${SKILLS}/<topic>.md.\n\n` +
@@ -492,29 +504,58 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
           if (existsSync(escalatePath)) writeFileSync(escalatePath, "");
           const dfNote = existsSync(dataflowErrorsPath) && readFileSync(dataflowErrorsPath, "utf-8").trim()
             ? ` Also resolve the data-flow issues listed in reharness/.cache/scratch/dataflow-errors.md.` : "";
-          await c.agent("polish",
-            `Review the generated pipeline (reharness/.cache/scratch/_compiled.md) against the approved PRD at ${PRD}, ` +
-            `then fix what genuinely needs fixing — editing ONLY agent prompts (reharness/agents/${id}/<name>/SYSTEM.md) and code ` +
-            `(reharness/lib/${id}-states.ts).${dfNote} If a fix requires a topology change you cannot make in the ` +
-            `leaves, write the one-line reason to ${ESCALATE} and stop (do not edit the skeleton).`,
-            { append: "_fsm-syntax" });
-          if (existsSync(escalatePath) && readFileSync(escalatePath, "utf-8").trim()) {
+          try {
+            await c.agent("polish",
+              `Review the generated pipeline (reharness/.cache/scratch/_compiled.md) against the approved PRD at ${PRD}, ` +
+              `then fix what genuinely needs fixing — editing ONLY agent prompts (reharness/agents/${id}/<name>/SYSTEM.md) and code ` +
+              `(reharness/lib/${id}-states.ts).${dfNote} If a fix requires a topology change you cannot make in the ` +
+              `leaves, write the one-line reason to ${ESCALATE} and stop (do not edit the skeleton).`,
+              // Watchdog instead of a blind total timeout: L1 idle kills polish only on SILENCE (a working pass
+              // streams, so a deep harness runs to completion); L3 maxMs is the non-extendable ceiling (a runaway
+              // that games liveness still dies). A trip throws "Agent killed: …" → caught below → fail loud.
+              { append: "_fsm-syntax", idleMs: POLISH_IDLE_MS, maxMs: POLISH_MAX_MS });
+          } catch (e: any) {
+            const msg = String(e?.message ?? e);
+            if (!/Agent killed/.test(msg)) throw e; // a real crash — let the FSM's active-state catch fail loud
+            c.emit(`⚠ ${msg}`);
+            c.data.error = `polish ${msg.replace(/^Agent killed: /, "")} — correction pass incomplete; pipeline NOT certified (raise REHARNESS_POLISH_* or simplify/split the harness).`;
+            return "TIMEOUT";
+          }
+          const escalation = existsSync(escalatePath) ? readFileSync(escalatePath, "utf-8").trim() : "";
+          if (escalation) {
             c.emit("↻ polish: topology change needed → redesign");
+            // Carry the reason so the error terminal fails LOUD (invariant: total δ, no reasonless stall) when the
+            // bounded escalate→redesign budget is exhausted — mirrors how `verify` sets data.error before FAIL.
+            c.data.error = `polish escalated a topology change redesign could not resolve within ${CORRECTION_RETRIES} attempt(s): ${escalation.split("\n")[0].slice(0, 200)}`;
             c.retry("polish");
             return "ESCALATE";
           }
+          delete c.data.error; // polish succeeded — clear any stale escalation reason before proceeding to verify
           c.emit("✓ polish done");
           return "DONE";
         },
-        timeoutMs: 720_000,
         on: {
           DONE: "verify",
-          TIMEOUT: "verify", // hard backstop: proceed to the deterministic gate, partial fixes and all
+          // The watchdog killed polish (idle silence or hard ceiling) before it finished — so the analyzer's
+          // data-flow issues and review fixes may remain UNADDRESSED. `verify` only type-checks (tsc), so routing
+          // here to verify would silently certify an incomplete pipeline (how 24 data-flow flags once shipped on
+          // "verify passed"). Propagate a LOUD error instead — an unfinished correction never silently passes.
+          TIMEOUT: "polish_timeout",
           ESCALATE: [
             { target: "redesign", guard: (c) => c.retries("polish") < CORRECTION_RETRIES },
             { target: "error" },
           ],
         },
+      },
+
+      polish_timeout: {
+        entry: async (c) => {
+          if (!c.data.error) c.data.error =
+            "polish did not complete the correction pass — analyzer-flagged data-flow / review issues may remain " +
+            "unaddressed; pipeline NOT certified. Re-run compile (raise REHARNESS_POLISH_* / simplify / split).";
+          return "DONE";
+        },
+        on: { DONE: "error" },
       },
 
       verify: {

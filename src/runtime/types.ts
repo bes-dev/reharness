@@ -204,6 +204,13 @@ export interface AgentOpts {
    *  are the other two static axes. Absent ⇒ Pi defaults. */
   skills?: string[];
   extensions?: string[];
+  /** Per-leaf watchdog (the two-timer model). idleMs = L1 liveness (kill on silence); maxMs/maxUsd/maxTokens =
+   *  L3 non-extendable ceilings. A `--param <state>.<knob>` override wins; else this; else the global env default.
+   *  0/absent = disabled. Lets a caller (e.g. the compiler's own polish) bound a leaf without a blind total timeout. */
+  idleMs?: number;
+  maxMs?: number;
+  maxUsd?: number;
+  maxTokens?: number;
 }
 
 export interface InteractiveOpts extends AgentOpts {

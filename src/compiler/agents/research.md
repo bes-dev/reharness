@@ -27,7 +27,14 @@ the web is your primary source. A trace and a harness together corroborate each 
 
 - The task/request, and any of: a recorded session (any format — JSONL/JSON/markdown/transcript), an existing
   harness/implementation directory. Read them as-is; you are the universal parser. A large session may arrive as a
-  condensed digest.
+  condensed digest. **An existing harness is given as a DIRECTORY PATH — explore it with your file tools (ls/read/grep):
+  read the top-level orchestration spec, FOLLOW its subagent/tool references to the per-step agent definitions, and
+  read each agent's skills. For each CAPABILITY-BEARING skill an agent carries (a domain methodology / checklist /
+  pattern set — e.g. architecture or API-design rules, NOT orchestration glue), WRITE its operative core as its own
+  `reharness/skills/<topic>.md`, distilled: keep the specific rules/patterns/checklists, drop the verbose enumeration
+  a capable model already knows. Note which leaf (step) carries it so `enhance` can attach it. Do NOT merely name or
+  map the skills — PRESERVE their content here, or it is lost (`enhance` can only attach a skill that exists in
+  `skills/`).**
 - Any feedback files in `reharness/.cache/feedback/`.
 
 ## Workflow

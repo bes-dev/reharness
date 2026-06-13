@@ -25,6 +25,12 @@ export interface RunGenerateOptions {
   command?: string;
   /** `compile --from-session <path>`: a recorded session (file or dir, ANY format) to distil into a pipeline. */
   fromSession?: string;
+  /** `compile --from-harness <dir>`: an existing harness/implementation directory the `research` agent explores
+   *  IN PLACE (reads the orchestration spec, follows subagent refs to agent defs, reads skills) — a first-class
+   *  grounding source alongside a request/session, not flattened. */
+  fromHarness?: string;
+  /** Absolute harness dir (resolved from fromHarness) injected into the pipeline config as `config.harness`. */
+  harness?: string;
   /** Per-run hyperparameter overrides (`--param state.knob=value`) — applies to the compiler pipeline itself. */
   overrides?: Record<string, number>;
   /** Agent backend ("pi" | "claude") for the compiler pipeline — compile is token-heavy, so a Claude Code
@@ -127,7 +133,16 @@ export async function runCompile(opts: RunGenerateOptions): Promise<number> {
     mkdirSync(genDir, { recursive: true });
     writeFileSync(resolve(genDir, "session.md"), text);
     opts = { ...opts, session: true };
-  } else if (!opts.input.trim()) {
+  }
+  // Harness front: a directory the `research` agent explores IN PLACE (not staged/flattened). Resolve to an
+  // absolute path and inject into config.harness; the harness alone is a valid input (it IS the workflow spec),
+  // so synthesise a default description when none is given. Composes with a request/session (extra grounding).
+  if (opts.fromHarness) {
+    if (!existsSync(opts.fromHarness) || !statSync(opts.fromHarness).isDirectory()) { console.error(`No harness directory at "${opts.fromHarness}".`); return 1; }
+    opts = { ...opts, harness: resolve(opts.fromHarness) };
+    if (!opts.input.trim() && !opts.session) opts = { ...opts, input: `Compile the workflow implemented by the provided harness into a reharness pipeline, preserving its orchestration, per-step agents, and skills.` };
+  }
+  if (!opts.input.trim() && !opts.session && !opts.harness) {
     console.error(`Usage: reharness ${verb} <${opts.amend ? "what to add or change" : "description"}>`); return 1;
   }
   if (opts.name !== undefined) {
@@ -210,7 +225,7 @@ export async function runEvolve(opts: { cwd: string; piModel?: string; command?:
   }
 }
 
-const terminalApprovalHandler: ApprovalHandler = async (cp) => {
+export const terminalApprovalHandler: ApprovalHandler = async (cp) => {
   const { dim, bold, cyan, red } = ansi;
   const sep = dim("─".repeat(60));
   console.log(`\n${sep}\n${bold(cyan("◆ APPROVAL"))} ${dim(`(${cp.state}, round ${cp.round})`)}\n\n${cp.prompt}\n`);

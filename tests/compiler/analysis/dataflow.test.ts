@@ -67,13 +67,23 @@ test("extractCodeDataIO: context param need not be named `c`", () => {
   assert.deepEqual(io(src, "ctx"), { reads: ["data.path"], writes: ["data.size"] });
 });
 
-test("extractCodeDataIO: a sibling top-level helper is not mis-attributed to a state", () => {
-  // The old offset-slice leaked a helper's c.data refs into a neighbouring entry's body.
+test("extractCodeDataIO: an UNCALLED sibling helper is not mis-attributed to a state", () => {
+  // A helper defined nearby but NOT called must stay isolated (the AST-bounding fix; no text-offset leak).
   const src = `function helper(c: any) { return c.data.leaked; }
-export async function realEntry(c: any): Promise<'DONE'> { c.data.out = helper(c); return 'DONE'; }`;
+export async function realEntry(c: any): Promise<'DONE'> { c.data.out = 1; return 'DONE'; }`;
   const m = extractCodeDataIO(src);
   assert.equal(m.has("helper"), false, "non-Entry helper is not a state");
   assert.deepEqual(io(src, "real"), { reads: [], writes: ["data.out"] });
+});
+
+test("extractCodeDataIO: a CALLED ctx-threaded helper's data I/O is folded into the caller (interprocedural)", () => {
+  // The real bug: a code state factors its data writes into a helper (`stash(c)`). Without following the call the
+  // write looks unwritten → a phantom use-before-def. The helper's read is folded too (sound over-approximation).
+  const src = `function stash(c: any) { c.data.stashed = 1; }
+function reader(c: any) { return c.data.leaked; }
+function untouched(c: any) { c.data.never = 1; }
+export async function realEntry(c: any): Promise<'DONE'> { stash(c); c.data.out = reader(c); return 'DONE'; }`;
+  assert.deepEqual(io(src, "real"), { reads: ["data.leaked"], writes: ["data.out", "data.stashed"] });
 });
 
 test("extractCodeDataIO: nested closure writes are seen; data read-and-written counts as write only", () => {

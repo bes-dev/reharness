@@ -31,6 +31,22 @@ export const POLL_MS = num("REHARNESS_POLL_MS", 1_000);
 export const AGENT_RETRIES = num0("REHARNESS_AGENT_RETRIES", 2);
 /** Base backoff (ms) between agent retries — exponential (×2^attempt) with ±50% jitter. */
 export const AGENT_BACKOFF_MS = num("REHARNESS_AGENT_BACKOFF_MS", 1_000);
+
+// ── per-agent watchdog (the two-timer model for a poorly-predictable work horizon) ────────────────────────────
+// A fixed wall-clock timeout kills a slow-but-working agent and a hung one alike. The watchdog separates LIVENESS
+// (is it still emitting events?) from a hard CEILING (it may not run forever): the idle timer waits on a working
+// leaf and kills only a silent one; the ceilings (wall-clock / cost / tokens) are non-extendable and bound a
+// runaway "playing solitaire" agent — limited liability that can't be escaped. All default 0 = DISABLED (opt-in,
+// zero behaviour change); set globally here or per-leaf via `--param <state>.{idleMs|maxMs|maxUsd|maxTokens}`.
+/** L1 — idle/heartbeat: kill an agent leaf that emits NO backend event for this long (a hung process). The timer
+ *  resets on every stream event, so a slow-but-PRODUCING agent is never killed — only a silent one. 0 = disabled. */
+export const AGENT_IDLE_MS = num0("REHARNESS_AGENT_IDLE_MS", 0);
+/** L3 — absolute wall-clock ceiling for one agent leaf (across retries; non-extendable runaway backstop). 0 = off. */
+export const AGENT_MAX_MS = num0("REHARNESS_AGENT_MAX_MS", 0);
+/** L3 — hard cost ceiling (USD) for one agent leaf, summed across retries. 0 = disabled. */
+export const AGENT_MAX_USD = num0("REHARNESS_AGENT_MAX_USD", 0);
+/** L3 — hard token ceiling (in+out) for one agent leaf, summed across retries. 0 = disabled. */
+export const AGENT_MAX_TOKENS = num0("REHARNESS_AGENT_MAX_TOKENS", 0);
 /** How many past runs to keep in a command's logs dir; older `run-*` dirs are pruned at run start. 0 = keep all. */
 export const RUN_RETENTION = num0("REHARNESS_RUN_RETENTION", 20);
 
@@ -43,5 +59,10 @@ export const LIGHT_MODEL = str("REHARNESS_LIGHT_MODEL", "anthropic/claude-haiku-
 export const COMPILER_CONCURRENCY = num("REHARNESS_COMPILER_CONCURRENCY", 4);
 /** Budget of a bounded correction loop (fix_verify / polish→redesign / heal / replan) before it gives up. */
 export const CORRECTION_RETRIES = num("REHARNESS_CORRECTION_RETRIES", 2);
+/** Polish watchdog (a deep harness makes the one-pass correction long): L1 idle — kill polish only after this much
+ *  SILENCE (a working polish streams, so it runs to completion); replaces the old blind total wall-clock. */
+export const POLISH_IDLE_MS = num("REHARNESS_POLISH_IDLE_MS", 240_000);
+/** Polish watchdog L3 — the non-extendable absolute ceiling, so a runaway polish that games liveness still dies. */
+export const POLISH_MAX_MS = num("REHARNESS_POLISH_MAX_MS", 1_800_000);
 /** Runs a freshly-bound evolve tool survives before the retention gate may trim it (the utility-problem grace). */
 export const EVOLVE_GRACE = num("REHARNESS_EVOLVE_GRACE", 3);

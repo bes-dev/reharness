@@ -92,16 +92,20 @@ function tokenize(src: string): Token[] {
   return out;
 }
 
-/** The internal guard encoding carried on a transition: `retries:<key><<max>` (a bounded-retry counter) or
- *  `expr:<expression>` (a boolean guard expression). Parsed and formatted in ONE place so the string format has
- *  a single owner — consumers (codegen, xml, dataflow, lint) never re-derive the `retries:`/`expr:` prefixes, so
- *  producer and consumers cannot drift. */
+/** The internal guard encoding carried on a transition: `retries:<key><<max>` (a bounded-retry counter),
+ *  `expr:<expression>` (a boolean guard expression), or BOTH combined as `retries:<key><<max>&&<expr>` — a
+ *  CONDITIONAL bounded back-edge (`take this edge while <expr> holds AND the counter is under max`), the canonical
+ *  bounded fix-loop ("re-run impl IF blocking findings, at most N times"). Parsed and formatted in ONE place so
+ *  the string format has a single owner — consumers (codegen, xml, dataflow, lint) never re-derive the prefixes. */
 export type Guard =
   | { kind: "retries"; key: string; max: number }
-  | { kind: "expr"; expr: string };
+  | { kind: "expr"; expr: string }
+  | { kind: "expr-retries"; key: string; max: number; expr: string };
 
 export function parseGuard(guard: string | undefined): Guard | null {
   if (!guard) return null;
+  const combined = guard.match(/^retries:(\w+)<(\d+)&&([\s\S]+)$/); // condition AND bound (a fix-loop back-edge)
+  if (combined) return { kind: "expr-retries", key: combined[1], max: Number(combined[2]), expr: combined[3] };
   const retry = guard.match(/^retries:(\w+)<(\d+)$/);
   if (retry) return { kind: "retries", key: retry[1], max: Number(retry[2]) };
   if (guard.startsWith("expr:")) return { kind: "expr", expr: guard.slice(5) };
@@ -109,7 +113,9 @@ export function parseGuard(guard: string | undefined): Guard | null {
 }
 
 export function formatGuard(g: Guard): string {
-  return g.kind === "retries" ? `retries:${g.key}<${g.max}` : `expr:${g.expr}`;
+  if (g.kind === "retries") return `retries:${g.key}<${g.max}`;
+  if (g.kind === "expr") return `expr:${g.expr}`;
+  return `retries:${g.key}<${g.max}&&${g.expr}`;
 }
 
 /** Throws on invalid expression. Returns the compiled JS body (with `c.` prefix on root idents). */
