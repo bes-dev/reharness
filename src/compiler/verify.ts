@@ -102,6 +102,28 @@ export function unawaitedShell(libSource: string): string[] {
   return [...hits];
 }
 
+/** A string-literal stage name passed to `c.dir('X')` / `c.dirs('X')` that is NOT a PRODUCER stage. The workspace
+ *  model derives every inter-stage read from the graph (analysis.md): a `c.dir`/`c.dirs` arg must name a stage
+ *  that owns an output dir — the workspace dual of `configFlowErrors` (which requires every `c.config.X` to be a
+ *  declared input). Two failure modes, both silent at runtime (`c.dirs` returns `[]` → empty/wrong read):
+ *    - a name matching NO state (a typo), or
+ *    - a STRUCTURAL container — a `parallel`/`loop`/`switch`/… has no output dir of its own; its producer is the
+ *      BRANCH/STEP stage inside it (reading `judge_phase` the parallel instead of `judge` the branch was the bug).
+ *  `producerNames` = states whose type owns a dir (agent/code/interactive/set). Literals only (a computed arg is
+ *  not checkable and not the bug class). Returns the offending names. */
+export function unknownStageRefs(libSource: string, producerNames: Set<string>): string[] {
+  const bad = new Set<string>();
+  for (const m of libSource.matchAll(/\b(?:c|ctx)\.dirs?\s*\(\s*['"]([^'"]+)['"]/g))
+    if (!producerNames.has(m[1])) bad.add(m[1]);
+  return [...bad];
+}
+
+/** State types that own a workspace output dir (so are valid `c.dir`/`c.dirs` targets). Structural states
+ *  (parallel/loop/switch/approval/wait/call/final) own none — their producer is the branch/step inside. */
+const PRODUCER_TYPES = new Set(["agent", "code", "interactive", "set"]);
+export const producerStageNames = (sk: { states: Record<string, { type: string }> }): Set<string> =>
+  new Set(Object.keys(sk.states).filter(n => PRODUCER_TYPES.has(sk.states[n].type)));
+
 export function emptyOutputDefaults(inputs: InputDecl[] | undefined, libSource: string): string[] {
   const out: string[] = [];
   for (const a of inputs || []) {
@@ -159,6 +181,15 @@ export function verifyGenerated(targetDir: string): string[] {
       for (const m of code.matchAll(/\b(?:c|ctx)\.agent\(\s*['"]([^'"]+)['"]/g)) embedded.add(m[1]);
       if (embedded.size) {
         errors.push(`## Embedded agent call in code state\n[${sk.id}] \`lib/${sk.id}-states.ts\` calls c.agent(${[...embedded].map(n => `'${n}'`).join(", ")}) from a code state. Code states are deterministic and must not invoke agents — promote each LLM call to its own \`agent\` state (or a \`parallel\`/\`loop\` over an agent state).`);
+      }
+
+      // Inter-stage reads are derived from the graph: a c.dir/c.dirs literal must name a real producer stage
+      // (the workspace dual of configFlowErrors). A hallucinated name (judge_phase for stage judge) makes c.dirs
+      // return [] at runtime → a silent wrong/empty read. Catch it at compile time.
+      const producers = producerStageNames(sk);
+      const badStages = unknownStageRefs(code, producers);
+      if (badStages.length) {
+        errors.push(`## Unknown stage in c.dir/c.dirs\n[${sk.id}] \`lib/${sk.id}-states.ts\` reads stage(s) ${badStages.map(n => `\`${n}\``).join(", ")} that are not producer stages. \`c.dir('<stage>')\`/\`c.dirs('<stage>')\` must name a stage that OWNS an output dir — a non-existent name, or a STRUCTURAL container (a \`parallel\`/\`loop\` has no dir of its own; read its BRANCH/STEP stage instead, e.g. \`c.dirs('judge')\` not \`c.dirs('judge_phase')\`). A wrong name returns nothing at runtime and silently feeds an empty read. Producer stages here: ${[...producers].map(n => `\`${n}\``).join(", ")}.`);
       }
 
       // Workspace invariant: every artifact a stage produces must live under its run dir. Code states write

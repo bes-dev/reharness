@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { workspaceEscapes, substrateViolations, unprovisionableImports, emptyOutputDefaults, runtimeInstalls, unawaitedShell, stripComments } from "../../src/compiler/verify.js";
+import { workspaceEscapes, substrateViolations, unprovisionableImports, emptyOutputDefaults, runtimeInstalls, unawaitedShell, unknownStageRefs, producerStageNames, stripComments } from "../../src/compiler/verify.js";
 import type { InputDecl } from "../../src/compiler/schema.js";
 
 test("flags os.tmpdir / mkdtemp(os.tmpdir()) — the real reviewer_v1 escape", () => {
@@ -114,4 +114,34 @@ test("comment-immunity: comments mentioning require()/__dirname/os.tmpdir/'/tmp'
   // but the real thing, in code, is still flagged after stripping
   assert.ok(substrateViolations(stripComments(`const x = require('pdfkit'); // load it`)).length > 0);
   assert.ok(workspaceEscapes(stripComments(`mkdirSync('/tmp/work'); // scratch`)).length > 0);
+});
+
+test("unknownStageRefs: flags a c.dirs name that is not a skeleton stage (the judge_phase bug)", () => {
+  const stages = new Set(["ingest", "judge", "render"]);
+  const src = `const dirs = c.dirs('judge_phase'); const x = c.dir('ingest');`;
+  assert.deepEqual(unknownStageRefs(src, stages), ["judge_phase"]);
+});
+
+test("unknownStageRefs: valid c.dir/c.dirs names are NOT flagged", () => {
+  const stages = new Set(["ingest", "judge", "render"]);
+  assert.deepEqual(unknownStageRefs(`c.dir('ingest'); c.dirs('judge');`, stages), []);
+});
+
+test("unknownStageRefs: a computed (non-literal) arg is not checkable → not flagged", () => {
+  const stages = new Set(["ingest"]);
+  assert.deepEqual(unknownStageRefs("c.dir(stageName); c.dirs(specs[i].id)", stages), []);
+});
+
+test("unknownStageRefs: multiple bad refs are deduped", () => {
+  const stages = new Set(["a"]);
+  assert.deepEqual(unknownStageRefs(`c.dir('b'); c.dirs('b'); c.dir('cc')`, stages), ["b", "cc"]);
+});
+
+test("producerStageNames: excludes structural containers (parallel/loop/switch), keeps agent/code/set", () => {
+  const sk = { states: { ingest: {type:"code"}, judge_phase: {type:"parallel"}, judge: {type:"agent"}, gate: {type:"switch"}, render: {type:"code"}, done: {type:"final"} } } as any;
+  const p = producerStageNames(sk);
+  assert.deepEqual([...p].sort(), ["ingest","judge","render"]);
+  // the real bug: reading the parallel container 'judge_phase' instead of branch 'judge' is now flagged
+  assert.deepEqual(unknownStageRefs(`const d = c.dirs('judge_phase');`, p), ["judge_phase"]);
+  assert.deepEqual(unknownStageRefs(`const d = c.dirs('judge');`, p), []);
 });

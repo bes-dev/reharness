@@ -22,6 +22,7 @@
 | `visibleProducers` (data visibility) | `graph.ts` | **may-reachability** (ancestor producers) + structural **cardinality** classification |
 | grammar / well-formedness | `lint.ts` | the format's "type system" (required fields, identifiers, ref validity, guard compile) |
 | contract coverage | `semantic.ts` | every agent/code/interactive has a `<contract>` |
+| `c.dir`/`c.dirs` stage-ref validity | `verify.ts` | a string-literal stage name read by the generated lib must be a real producer stage — the **workspace dual of `configFlowErrors`** (which checks every `c.config.X` is a declared input). Catches a hallucinated name (`judge_phase` for stage `judge`) that would make `c.dirs` return `[]` → a silent empty read |
 
 `computeRoles` + `successors` (`graph.ts`) are the role-aware traversal (a parallel branch / loop step routes via its parent's join, not its own `<on>`) — the single source of "what does a state lead to" for all of the above.
 
@@ -38,6 +39,12 @@ Inter-stage data flow is **DERIVED from the topology, never declared.** Authors 
 - **External targets** (the third channel, for the real world) — paths/endpoints the workflow *operates on* (the user's dotfiles dir, a target repo, a deploy host) are NOT inter-stage artifacts: they are declared as **`<inputs>`** and accessed via **`config.<name>`**. This is the only path namespace that may point outside the run dir; it keeps the workflow parameterised (a DevOps/in-place task reaches the filesystem) while the workspace stays derived. The workspace-escape lint enforces the split: a `config`-derived path is allowed; a HARDCODED `os.homedir()`/absolute literal is rejected (non-parameterised). The `configFlowErrors` check already forces every `config.X` read to be a declared input — so external targets are always declared, never ad-hoc.
 
 All analyses + the data-flow model run **per skeleton** — one skeleton is one command. A `reharness/` may hold several commands; each is analyzed independently, and its generated agents/tools are namespaced under `<cmdId>` (see `pipeline.md`).
+
+### Output-side need-to-know (render-once) — the dual
+
+`visibleProducers` governs what flows INTO a stage (input need-to-know; the `overShare` detector — a leaf whose injected producer its contract never names — flags an isolation/cost candidate). The symmetric **output-side** property: a producer's content is **materialized in full exactly once**. A sink that aggregates many producers (a final report, an index) must REFERENCE — counts + an id/location index + cross-cutting synthesis — never a second full copy of content an upstream stage already wrote.
+
+This is **not a new fixpoint** — the detector is already an instance: `optimizationReport.highFanIn` (a producer read by ≥2 consumers, derived from `visibleProducers` = the same may-reachability engine) is the output dual of `overShare`. A producer fanned out to multiple full-render sinks is duplicated output (a CSE/hoist candidate). Like `overShare`, it is a **candidate the authoring stage adjudicates** (a sink may legitimately read just one field), never an auto-rewrite. The principle is enforced where the LLM authors the artifact (`design`/`fill_prompts_lib`, per the LEAN invariant — the analyzer detects, the author fixes); the empirical guard is the deliverable's **duplication ratio** (rendered bytes ÷ unique-content bytes), a healthy pipeline ≈ 1. The theory was asymmetric — rigorous on input visibility, silent on output materialization; this closes that half. *(History: a final-report code-state that re-rendered every finding's full body — already present in its per-dimension dossier — plus embedded whole proposed files, blew output to ~4.5× with zero extra coverage. The cause was the missing principle, not a broken one; input isolation was intact.)*
 
 ### Why this shape (history — don't reintroduce the old layers)
 
