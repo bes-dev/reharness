@@ -43,8 +43,10 @@ export interface GenerateOptions {
   input: string;
   fast?: boolean;
   autoApprove?: boolean;
-  /** Opt-in cost-optimization (`--optimize`): adds judgment-floor principles to the design prompt + deterministic
-   *  optimization lints to its in-session validate loop. Default off ⇒ base compile unchanged. */
+  /** Opt-in cost-optimization (`--optimize`): re-frames design from "faithfully reproduce the source" to
+   *  "treat the source as a REFERENCE and re-derive the cheapest pipeline for the TASK" (judgment floor:
+   *  agents only at irreducible judgment, terse structured output, mechanical→code, parallelise independents).
+   *  Default off ⇒ base compile reproduces the source faithfully (unchanged). */
   optimize?: boolean;
   /** Amend mode (`amend`): start from the existing pipeline, fold `input` into the PRD, and apply a minimal
    *  skeleton delta (review_prd → amend_design) instead of a from-scratch design. */
@@ -133,16 +135,24 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
     return [...errors, ...(sk ? [...validateContracts(sk), ...configFlowErrors(sk)] : [])];
   };
 
-  // Cost-optimization (opt-in via --optimize): drive the skeleton to its JUDGMENT FLOOR — an LLM only at irreducible
-  // judgment (terse structured output); everything mechanical is code ($0). Principles go in the design prompt;
-  // deterministic LINTS join its in-session validate loop so design fixes itself toward the floor (no rewriter agent).
+  // Cost-optimization (opt-in via --optimize). This is NOT the default "faithfully reproduce the source" objective —
+  // it REPLACES it: the PRD / source harness becomes a REFERENCE for understanding the TASK, and design RE-DERIVES
+  // the cheapest pipeline for that task from first principles (think high-level about the task, not the source's
+  // wiring). This re-frames the objective rather than bolting cost-rules onto fidelity (which conflicts — fidelity
+  // wins). No rewriter agent: the design agent simply authors the minimal pipeline directly.
   const optimizeNote = opts.optimize
-    ? `\n\nCOST-OPTIMIZE for runtime inference — drive the pipeline to its JUDGMENT FLOOR:\n` +
-      `- A stage is an \`agent\` ONLY if it carries irreducible JUDGMENT (a decision a deterministic function couldn't make). ` +
-      `Everything mechanical — list, parse, aggregate, merge, count, sort, format, render, route, validate, persist — is a \`code\` state ($0 at runtime).\n` +
-      `- Aggregation / consolidation / report-RENDERING of upstream outputs is CODE, never an agent (an agent re-serialising another agent's output is the #1 wasted cost).\n` +
-      `- Every agent emits a TERSE STRUCTURED output (e.g. JSON records {…}), NOT prose/markdown — a downstream code state renders the human report for $0. Output tokens are the dominant cost.\n` +
-      `- One agent per irreducible judgment: never split one judgment across agents (each re-pays context); parallelise independent judgments instead.`
+    ? `\n\nOPTIMIZE MODE — do NOT reproduce the source's structure. Treat the PRD (and any source harness/trace) as a ` +
+      `REFERENCE for understanding the TASK; your objective is the CHEAPEST pipeline that yields the SAME DELIVERABLE, ` +
+      `re-derived from the task's own structure. Reason high-level about the task, not the source's stage list:\n` +
+      `- Identify the IRREDUCIBLE JUDGMENTS — decisions only a model can make. Each is ONE agent. Everything else ` +
+      `(scope, parse, aggregate, merge, count, sort, render, route, validate, persist) is a \`code\` state ($0). ` +
+      `Aggregation / report-rendering is ALWAYS code, never an agent.\n` +
+      `- For each judgment, decide what it GENUINELY consumes. Wire ONLY real dependencies. The source often SEQUENCES ` +
+      `stages (phase 2 after phase 1) or forwards context between them when they are actually INDEPENDENT — if a ` +
+      `judgment needs only the original input, run such judgments in ONE parallel, NOT sequential phases. Do not ` +
+      `mirror the source's sequencing; re-derive it from real data dependencies.\n` +
+      `- Every agent emits a TERSE STRUCTURED output (JSON records); a downstream code state renders the human report ($0).\n` +
+      `Preserve the DELIVERABLE the PRD promises; restructure everything else freely toward the minimum.`
     : "";
 
   return definePipeline({
