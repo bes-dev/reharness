@@ -3,6 +3,35 @@
 All notable changes to reharness are documented here. This project adheres to [Semantic Versioning](https://semver.org/);
 while `0.x`, the runtime/compiler API may change between minor versions.
 
+## Unreleased
+
+### Added
+- `compile --from-harness <dir>` — compile from an existing harness/implementation directory (research explores it in place).
+- **Two-timer agent watchdog**: an L1 idle timer (kill on silence, reset by streaming) plus non-extendable L3 ceilings
+  (`maxMs`/`maxUsd`/`maxTokens`). Env- and `--param`-configurable, default off; a trip fails loud into the verdict.
+- **Accurate token accounting**: `cacheRead`/`cacheWrite` are captured (uncached input alone undercounted input ~30×);
+  the run verdict reports total / output / cached tokens and the cache-discounted cost.
+- `--optimize` — a cost-aware compile: a judgment-floor design objective (mechanical→code, terse structured output) and,
+  when compiling from a source harness/trace, **task-first re-derivation** (the source is a reference, not a template);
+  plus a static optimization-opportunity analyzer (context surface, fan-in, dead producers, over-share).
+- **Output-side data-flow (render-once)**: an aggregator references its producers, never restates them — the dual of
+  input need-to-know. New `c.dir`/`c.dirs` stage-reference check: a literal must name a producer stage (the workspace
+  dual of config-flow), caught at compile time.
+- **Opt-in prompt-cache priming for parallel fan-out** (`--param <parallel>.prime=1`): warm an agent-branch's shared
+  prompt prefix once before the worker pool so the branches reuse it (input-side CSE). Semantically transparent,
+  fail-soft, default off.
+
+### Changed
+- A timeout on **any** state now surfaces a warning in the run verdict, rather than being silently lost on non-`polish` states.
+- Compiler prompts: a raw user/external input (`config.<arg>`) has no graph-authored schema, so its **first reader must
+  be an `agent`** (never a `code` `JSON.parse` of free-form input); a missing **required** upstream producer is
+  **fail-loud** (`throw` → ERROR), never defaulted to a plausible "success" value.
+- Interprocedural `ctx.data` I/O extraction (follows ctx-threaded helper calls) for the definite-assignment check.
+
+### Removed
+- **Claude Code backend** (`--provider claude`). Pi is the only backend; the `Provider` seam in `runtime/providers.ts`
+  remains so adding a new backend is one adapter, not a cross-cutting change.
+
 ## 0.1.0 — first public release
 
 reharness compiles a natural-language request — or a recorded agent trace — into a **deterministic FSM pipeline**,

@@ -119,6 +119,11 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
     let stepCounter = 0;
     const warnings: { stage: string; message: string }[] = []; // c.warn → persisted in the verdict (degradations)
     const usage = { costUSD: 0, tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0, agentRuns: 0 }; // actual LLM spend, summed per agent leaf (tokensIn = UNCACHED input; cacheRead/Write = the cached bulk)
+    // Accumulate one agent run's usage into the run total — the single place the token/cost fields are summed.
+    const addUsage = (u: { costUSD: number; tokensIn: number; tokensOut: number; cacheRead: number; cacheWrite: number }) => {
+      usage.costUSD += u.costUSD; usage.tokensIn += u.tokensIn; usage.tokensOut += u.tokensOut;
+      usage.cacheRead += u.cacheRead; usage.cacheWrite += u.cacheWrite; usage.agentRuns += 1;
+    };
 
     // Per-run hyperparameter overrides: a flat `state.knob → value` map (CLI `--param`). A knob read at its use
     // site falls back to the compiled value when unset. Validated up-front (fail-loud) so a bad override never
@@ -234,7 +239,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
         skills: merge(harness.skills, o?.skills), extensions: merge(harness.extensions, o?.extensions),
         idleMs: knob("idleMs", AGENT_IDLE_MS), maxMs: knob("maxMs", AGENT_MAX_MS),
         maxUsd: knob("maxUsd", AGENT_MAX_USD), maxTokens: knob("maxTokens", AGENT_MAX_TOKENS),
-        onUsage: (u) => { usage.costUSD += u.costUSD; usage.tokensIn += u.tokensIn; usage.tokensOut += u.tokensOut; usage.cacheRead += u.cacheRead; usage.cacheWrite += u.cacheWrite; usage.agentRuns += 1; },
+        onUsage: addUsage,
       });
       emit(`✓ ${name}`);
     }
@@ -440,7 +445,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
       // when none exists, so the try/catch both classifies the branch and yields the prefix file to warm.
       let branchPrompt: string | null = null;
       try { branchPrompt = resolvePrompt(agentsDir, state.branch); } catch { branchPrompt = null; }
-      if ((param(name, "prime") ?? 0) > 0 && items.length >= 2 && branchPrompt && !sig?.aborted) {
+      if (!dryRun && (param(name, "prime") ?? 0) > 0 && items.length >= 2 && branchPrompt && !sig?.aborted) {
         try {
           const primeDir = resolve(runDir, TRACE_DIR); mkdirSync(primeDir, { recursive: true });
           const harness = loadHarness(agentsDir, state.branch);
@@ -448,9 +453,10 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
           await runAgent({
             prompt: branchPrompt, task: "Respond with exactly: ready", cwd,
             onLine: () => {}, onStatus: () => {}, provider, logFile: resolve(primeDir, `prime-${state.branch}.md`),
-            piBinary, piModel: harness.model || piModel, signal: sig, skills: harness.skills,
+            piBinary, piModel: harness.model || piModel, signal: sig,
+            skills: harness.skills, extensions: harness.extensions, // mirror the branch's cached prefix exactly
             idleMs: AGENT_IDLE_MS || undefined, maxMs: AGENT_MAX_MS || undefined,
-            onUsage: (u) => { usage.costUSD += u.costUSD; usage.tokensIn += u.tokensIn; usage.tokensOut += u.tokensOut; usage.cacheRead += u.cacheRead; usage.cacheWrite += u.cacheWrite; usage.agentRuns += 1; },
+            onUsage: addUsage,
           });
         } catch (e: any) { emit(`⚠ cache prime for '${state.branch}' failed (${e.message}) — continuing without warm-up`); }
       }

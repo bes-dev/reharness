@@ -9,7 +9,7 @@ import { AGENT_RETRIES, AGENT_BACKOFF_MS } from "../config.js";
 /** Map a raw spawn failure to an actionable message — a missing backend binary is the #1 first-run stumble. */
 function spawnError(provider: Provider, binary: string, e: any): Error {
   if (e?.code === "ENOENT")
-    return new Error(`Backend '${provider.name}' not found: '${binary}' is not on PATH. Install it (pi: \`npm i -g @mariozechner/pi-coding-agent\`; claude: the Claude Code CLI) or pass an absolute path via --model/def.piBinary.`);
+    return new Error(`Backend '${provider.name}' not found: '${binary}' is not on PATH. Install it (\`npm i -g @mariozechner/pi-coding-agent\`) or pass an absolute path via --model/def.piBinary.`);
   return e instanceof Error ? e : new Error(String(e));
 }
 
@@ -38,10 +38,10 @@ export interface AgentRunConfig {
   logFile?: string;
   onLine?: (msg: string) => void;
   onStatus?: (text: string) => void;
-  /** Override the provider's default executable (e.g. an absolute `pi`/`claude` path). */
+  /** Override the provider's default executable (e.g. an absolute `pi` path). */
   piBinary?: string;
   piModel?: string;
-  /** Backend adapter (Pi / Claude Code). Absent ⇒ Pi — so direct callers and tests are unchanged. */
+  /** Backend adapter (Pi). Absent ⇒ Pi — so direct callers and tests are unchanged. */
   provider?: Provider;
   signal?: AbortSignal;
   /** Per-leaf watchdog (the two-timer model). Each 0/undefined = disabled. idleMs = L1 liveness (kill on silence);
@@ -248,7 +248,7 @@ function oneshotAttempt(config: AgentRunConfig, provider: Provider, binary: stri
  * The orchestrator (not the agent) decides completion — mechanical. The process stays alive across
  * re-prompts, so the prompt cache stays hot and the agent fixes its OWN output in-context (no fresh
  * patch session, no context rebuild). A turn is one framed user message; turn-end is the provider's
- * `turn_end` NormEvent (Pi `agent_end` / Claude `result`).
+ * `turn_end` NormEvent (Pi `agent_end`).
  *
  * The validator is the caller-supplied `validate()` closure (e.g. validateSkeleton for the design agent),
  * returning error strings (empty = clean).

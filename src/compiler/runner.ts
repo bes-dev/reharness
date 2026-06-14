@@ -18,7 +18,8 @@ export interface RunGenerateOptions {
   piModel?: string;
   fast?: boolean;
   noEnhance?: boolean;
-  /** Opt-in cost-optimization pass: cost-aware design + optimization lints (drive to the judgment floor). */
+  /** Opt-in cost-optimization (`--optimize`): a cost-aware design objective (drive to the judgment floor —
+   *  mechanical→code, terse structured output). Prompt-level only; no auto-rewrite. */
   optimize?: boolean;
   amend?: boolean;
   /** User-chosen command name (`--name`, compile only). Overrides the auto-derived skeleton id. */
@@ -35,8 +36,7 @@ export interface RunGenerateOptions {
   harness?: string;
   /** Per-run hyperparameter overrides (`--param state.knob=value`) — applies to the compiler pipeline itself. */
   overrides?: Record<string, number>;
-  /** Agent backend ("pi" | "claude") for the compiler pipeline — compile is token-heavy, so a Claude Code
-   *  subscription is most valuable here. */
+  /** Agent backend for the compiler pipeline (default: "pi"). */
   provider?: string;
   /** Set internally once the session is staged — routes the pipeline to the distill front. */
   session?: boolean;

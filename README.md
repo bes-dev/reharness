@@ -4,7 +4,7 @@
 
 **A reasoning compiler.** Spend a model's intelligence *once*, at compile time, to turn a natural-language request — or a recorded agent trace — into a deterministic finite-state-machine pipeline. Most of the pipeline is ordinary code; only a few clearly-marked **agent** leaves call a model at runtime. The compiled artifact is a persistent, version-controllable directory you can read, test, and ship — and a fully-mechanical task compiles all the way down to **zero runtime model calls** (`0 agent runs · 0 tokens · $0.0000`).
 
-The human approves the **intent** (a short PRD), never the generated graph. Inter-stage data flow is derived from the topology, not declared. Backends are pluggable (Pi / Claude Code), so you can run the agents on a subscription instead of paying per token.
+The human approves the **intent** (a short PRD), never the generated graph. Inter-stage data flow is derived from the topology, not declared. The agent leaves run on the **Pi** backend (the runtime keeps a one-adapter seam for adding others).
 
 ## Installation
 
@@ -14,12 +14,11 @@ npm install -g reharness
 
 Package: **[npmjs.com/package/reharness](https://www.npmjs.com/package/reharness)**.
 
-reharness runs its agent leaves on a pluggable **backend** — install at least one and put it on `PATH`:
+reharness runs its agent leaves on the **Pi** backend — install it and put it on `PATH`:
 
-- **Pi** (default) — the minimalist agent CLI (`pi`). See [pi-mono](https://github.com/badlogic/pi-mono).
-- **Claude Code** (`claude`) — drive the agents on a Claude Code subscription instead of per-token billing (`--provider claude`).
+- **Pi** — the minimalist agent CLI (`pi`). See [pi-mono](https://github.com/badlogic/pi-mono).
 
-Provide model/API auth as that backend expects (e.g. `ANTHROPIC_API_KEY` for Claude Code, or your `pi` config). Node ≥ 18.
+Provide model/API auth as `pi` expects. Node ≥ 18.
 
 ## Quick Start
 
@@ -172,23 +171,11 @@ flowchart TD
 
 ### Backends (providers)
 
-The agent leaves run on a pluggable backend; the FSM/compiler are provider-agnostic (a leaf is just "someone runs it").
-
-- **`pi`** (default) — the Pi CLI.
-- **`claude`** — Claude Code. Lets a **Claude Code subscription drive the agents instead of paying per-token** —
-  especially valuable for `compile`, which is the token-heavy step.
-
-Select per run with `--provider claude`, per pipeline with `def.provider`, or globally with `REHARNESS_PROVIDER`.
-It applies uniformly to compiled commands and to the compiler's own pipelines (compile/amend/evolve). Adding a backend
-is one adapter in `src/runtime/providers.ts` (argv + event schema + RPC framing + synthesized-tool rendering); the
-long-lived in-session validation loop (hot prompt cache across re-prompts) works on both via Claude Code's
-`--input-format stream-json`. `evolve`'s synthesized tools are authored once as a neutral routine and rendered per
-backend (a Pi extension and an MCP server), so dynamic amortization works whichever backend runs the command.
-
-```bash
-reharness compile --provider claude "scrape a site and summarize"   # compile on your Claude Code subscription
-REHARNESS_PROVIDER=claude reharness my-flow                          # or set it globally
-```
+The agent leaves run on the **Pi** backend; the FSM/compiler are provider-agnostic (a leaf is just "someone runs it").
+The backend is a single adapter in `src/runtime/providers.ts` (argv lowering of the three harness axes + event-stream
+normalization + RPC turn-framing + synthesized-tool rendering), so adding another backend is one Provider, not a
+cross-cutting change. Select with `--provider`, `def.provider`, or `REHARNESS_PROVIDER` (today: `pi`). `--model` /
+`def.piModel` choose the model within the backend.
 
 ### Tuning hyperparameters
 

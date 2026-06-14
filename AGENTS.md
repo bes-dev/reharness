@@ -129,10 +129,10 @@ profile). They are applied at the runtime layer (`RunOptions.overrides`, keyed `
 a `max` override stays a finite integer ≥1, so the termination guarantee holds. The compiler's *own* knobs (fan-out
 width, correction-retry budget, shell timeout, …) live in `src/config.ts`, each overridable via a `REHARNESS_*` env var.
 
-**Backend (provider).** Agent leaves run on a pluggable backend — `pi` (default) or `claude` (Claude Code, e.g. to use
-a subscription instead of per-token billing). Select via `--provider`, `def.provider`, or `REHARNESS_PROVIDER`. The FSM
-is provider-agnostic; each backend is one adapter in `src/runtime/providers.ts` (argv lowering of the three axes +
-event-stream normalization + RPC turn-framing). `--model` / `def.piModel` choose the model within the backend.
+**Backend (provider).** Agent leaves run on the `pi` backend (default and currently the only one). Select via
+`--provider`, `def.provider`, or `REHARNESS_PROVIDER`. The FSM is provider-agnostic; the backend is one adapter in
+`src/runtime/providers.ts` (argv lowering of the three axes + event-stream normalization + RPC turn-framing), so a new
+backend is one Provider, not a cross-cutting change. `--model` / `def.piModel` choose the model within the backend.
 
 ## State Context API
 

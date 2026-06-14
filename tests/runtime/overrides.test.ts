@@ -61,6 +61,19 @@ test("invalid overrides fail loud before the run executes", async () => {
   // non-positive / non-integer loop max (would break the termination invariant)
   assert.equal(await runWith(countingLoop(), "loop", { overrides: { "loop.max": 0 } }), "error");
   assert.equal(await runWith(countingLoop(), "loop", { overrides: { "loop.max": 1.5 } }), "error");
+  // `prime` applies only to a parallel state
+  assert.equal(await runWith(countingLoop(), "loop", { overrides: { "done.prime": 1 } }), "error");
+});
+
+test("--param prime is accepted on a parallel; a code branch (no prompt) is simply not primed", async () => {
+  // prime warms an AGENT branch's shared prefix; a code branch has no prompt file, so the prime is skipped —
+  // the param must validate and the run must succeed unchanged (no agent spawned).
+  const status = await runWith({
+    par: { type: "parallel", over: () => [0, 1], branch: "work", join: "done", on: {} },
+    work: { entry: () => {}, on: "done" },
+    done: { type: "final", status: "success" },
+  }, "par", { overrides: { "par.prime": 1 } });
+  assert.equal(status, "success");
 });
 
 test("--param overrides parallel concurrency without changing the result set", async () => {

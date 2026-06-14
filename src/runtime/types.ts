@@ -141,7 +141,7 @@ export interface PipelineDefinition<C extends Record<string, any> = Record<strin
   logsDir?: string;
   piBinary?: string;
   piModel?: string;
-  /** Backend the agent leaves run on: "pi" (default) | "claude". Overridden per-run by RunOptions.provider. */
+  /** Backend the agent leaves run on (default: "pi"). Overridden per-run by RunOptions.provider. */
   provider?: string;
 }
 
@@ -173,7 +173,7 @@ export interface RunOptions {
   autoApprove?: boolean;
   /** Per-run hyperparameter overrides, keyed `state.knob` (knob ∈ max | concurrency | timeoutMs). CLI: `--param`. */
   overrides?: Record<string, number>;
-  /** Backend for this run's agent leaves: "pi" (default) | "claude". CLI: `--provider`. */
+  /** Backend for this run's agent leaves (default: "pi"). CLI: `--provider`. */
   provider?: string;
   /** Smoke mode: don't spawn agents / shells (each is stubbed to a no-op success that drops a placeholder in its
    *  output dir). Exercises routing, guards, data-flow wiring and code-state logic to catch crashes / dead-ends /
