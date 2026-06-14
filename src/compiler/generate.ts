@@ -43,11 +43,6 @@ export interface GenerateOptions {
   input: string;
   fast?: boolean;
   autoApprove?: boolean;
-  /** Opt-in cost-optimization (`--optimize`): re-frames design from "faithfully reproduce the source" to
-   *  "treat the source as a REFERENCE and re-derive the cheapest pipeline for the TASK" (judgment floor:
-   *  agents only at irreducible judgment, terse structured output, mechanical→code, parallelise independents).
-   *  Default off ⇒ base compile reproduces the source faithfully (unchanged). */
-  optimize?: boolean;
   /** Amend mode (`amend`): start from the existing pipeline, fold `input` into the PRD, and apply a minimal
    *  skeleton delta (review_prd → amend_design) instead of a from-scratch design. */
   amend?: boolean;
@@ -135,25 +130,6 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
     return [...errors, ...(sk ? [...validateContracts(sk), ...configFlowErrors(sk)] : [])];
   };
 
-  // Cost-optimization (opt-in via --optimize). This is NOT the default "faithfully reproduce the source" objective —
-  // it REPLACES it: the PRD / source harness becomes a REFERENCE for understanding the TASK, and design RE-DERIVES
-  // the cheapest pipeline for that task from first principles (think high-level about the task, not the source's
-  // wiring). This re-frames the objective rather than bolting cost-rules onto fidelity (which conflicts — fidelity
-  // wins). No rewriter agent: the design agent simply authors the minimal pipeline directly.
-  const optimizeNote = opts.optimize
-    ? `\n\nOPTIMIZE MODE — do NOT reproduce the source's structure. Treat the PRD (and any source harness/trace) as a ` +
-      `REFERENCE for understanding the TASK; your objective is the CHEAPEST pipeline that yields the SAME DELIVERABLE, ` +
-      `re-derived from the task's own structure. Reason high-level about the task, not the source's stage list:\n` +
-      `- Identify the IRREDUCIBLE JUDGMENTS — decisions only a model can make. Each is ONE agent. Everything else ` +
-      `(scope, parse, aggregate, merge, count, sort, render, route, validate, persist) is a \`code\` state ($0). ` +
-      `Aggregation / report-rendering is ALWAYS code, never an agent.\n` +
-      `- For each judgment, decide what it GENUINELY consumes. Wire ONLY real dependencies. The source often SEQUENCES ` +
-      `stages (phase 2 after phase 1) or forwards context between them when they are actually INDEPENDENT — if a ` +
-      `judgment needs only the original input, run such judgments in ONE parallel, NOT sequential phases. Do not ` +
-      `mirror the source's sequencing; re-derive it from real data dependencies.\n` +
-      `- Every agent emits a TERSE STRUCTURED output (JSON records); a downstream code state renders the human report ($0).\n` +
-      `Preserve the DELIVERABLE the PRD promises; restructure everything else freely toward the minimum.`
-    : "";
 
   return definePipeline({
     config: { target, input: opts.input, fast, autoApprove, amend: !!opts.amend, name: opts.name ?? "", command: opts.command ?? "", session: !!opts.session, harness: opts.harness ?? "" },
@@ -424,7 +400,7 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
           await c.agent("design",
             `Design the FSM that implements the approved PRD at ${PRD}: choose the stages, wire them into a valid graph, ` +
             `and give every agent/code/interactive state a behavioural <contract> (CDATA) describing what it does. ` +
-            `Write the whole skeleton to ${DRAFT}. Do NOT declare data flow — the compiler derives it from the graph.${siblingsNote}${optimizeNote}`,
+            `Write the whole skeleton to ${DRAFT}. Do NOT declare data flow — the compiler derives it from the graph.${siblingsNote}`,
             { append: "_fsm-syntax", validate: contractErrors });
         },
         on: "construct",

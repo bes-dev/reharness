@@ -11,9 +11,6 @@ while `0.x`, the runtime/compiler API may change between minor versions.
   (`maxMs`/`maxUsd`/`maxTokens`). Env- and `--param`-configurable, default off; a trip fails loud into the verdict.
 - **Accurate token accounting**: `cacheRead`/`cacheWrite` are captured (uncached input alone undercounted input ~30×);
   the run verdict reports total / output / cached tokens and the cache-discounted cost.
-- `--optimize` — a cost-aware compile: a judgment-floor design objective (mechanical→code, terse structured output) and,
-  when compiling from a source harness/trace, **task-first re-derivation** (the source is a reference, not a template);
-  plus a static optimization-opportunity analyzer (context surface, fan-in, dead producers, over-share).
 - **Output-side data-flow (render-once)**: an aggregator references its producers, never restates them — the dual of
   input need-to-know. New `c.dir`/`c.dirs` stage-reference check: a literal must name a producer stage (the workspace
   dual of config-flow), caught at compile time.

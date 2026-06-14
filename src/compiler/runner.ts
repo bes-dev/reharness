@@ -18,9 +18,6 @@ export interface RunGenerateOptions {
   piModel?: string;
   fast?: boolean;
   noEnhance?: boolean;
-  /** Opt-in cost-optimization (`--optimize`): a cost-aware design objective (drive to the judgment floor —
-   *  mechanical→code, terse structured output). Prompt-level only; no auto-rewrite. */
-  optimize?: boolean;
   amend?: boolean;
   /** User-chosen command name (`--name`, compile only). Overrides the auto-derived skeleton id. */
   name?: string;
