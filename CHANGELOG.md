@@ -3,7 +3,11 @@
 All notable changes to reharness are documented here. This project adheres to [Semantic Versioning](https://semver.org/);
 while `0.x`, the runtime/compiler API may change between minor versions.
 
-## Unreleased
+## 0.1.1 — 2026-06-15
+
+Hardening & cleanup since the first release: accurate token accounting, a two-timer agent watchdog, output-side
+render-once + a `c.dir`/`c.dirs` stage-reference check, the harness-compilation front, opt-in prompt-cache priming —
+and the Claude Code backend removed (Pi is the sole backend).
 
 ### Added
 - `compile --from-harness <dir>` — compile from an existing harness/implementation directory (research explores it in place).
