@@ -89,6 +89,6 @@ test("a fully-deterministic (code-only) run records usage: 0 agents, $0 — the 
   try {
     await p.run(() => {});
     const v = readVerdict(logsDir);
-    assert.deepEqual(v.usage, { costUSD: 0, tokensIn: 0, tokensOut: 0, agentRuns: 0 });
+    assert.deepEqual(v.usage, { costUSD: 0, tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0, agentRuns: 0 });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

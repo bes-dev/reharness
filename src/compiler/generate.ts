@@ -130,6 +130,7 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
     return [...errors, ...(sk ? [...validateContracts(sk), ...configFlowErrors(sk)] : [])];
   };
 
+
   return definePipeline({
     config: { target, input: opts.input, fast, autoApprove, amend: !!opts.amend, name: opts.name ?? "", command: opts.command ?? "", session: !!opts.session, harness: opts.harness ?? "" },
     initial: "start",

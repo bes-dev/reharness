@@ -33,8 +33,7 @@ export interface RunGenerateOptions {
   harness?: string;
   /** Per-run hyperparameter overrides (`--param state.knob=value`) — applies to the compiler pipeline itself. */
   overrides?: Record<string, number>;
-  /** Agent backend ("pi" | "claude") for the compiler pipeline — compile is token-heavy, so a Claude Code
-   *  subscription is most valuable here. */
+  /** Agent backend for the compiler pipeline (default: "pi"). */
   provider?: string;
   /** Set internally once the session is staged — routes the pipeline to the distill front. */
   session?: boolean;

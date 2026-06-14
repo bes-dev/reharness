@@ -9,7 +9,7 @@ import { AGENT_RETRIES, AGENT_BACKOFF_MS } from "../config.js";
 /** Map a raw spawn failure to an actionable message — a missing backend binary is the #1 first-run stumble. */
 function spawnError(provider: Provider, binary: string, e: any): Error {
   if (e?.code === "ENOENT")
-    return new Error(`Backend '${provider.name}' not found: '${binary}' is not on PATH. Install it (pi: \`npm i -g @mariozechner/pi-coding-agent\`; claude: the Claude Code CLI) or pass an absolute path via --model/def.piBinary.`);
+    return new Error(`Backend '${provider.name}' not found: '${binary}' is not on PATH. Install it (\`npm i -g @mariozechner/pi-coding-agent\`) or pass an absolute path via --model/def.piBinary.`);
   return e instanceof Error ? e : new Error(String(e));
 }
 
@@ -38,10 +38,10 @@ export interface AgentRunConfig {
   logFile?: string;
   onLine?: (msg: string) => void;
   onStatus?: (text: string) => void;
-  /** Override the provider's default executable (e.g. an absolute `pi`/`claude` path). */
+  /** Override the provider's default executable (e.g. an absolute `pi` path). */
   piBinary?: string;
   piModel?: string;
-  /** Backend adapter (Pi / Claude Code). Absent ⇒ Pi — so direct callers and tests are unchanged. */
+  /** Backend adapter (Pi). Absent ⇒ Pi — so direct callers and tests are unchanged. */
   provider?: Provider;
   signal?: AbortSignal;
   /** Per-leaf watchdog (the two-timer model). Each 0/undefined = disabled. idleMs = L1 liveness (kill on silence);
@@ -66,7 +66,7 @@ export interface AgentRunConfig {
 }
 
 /** Per-agent LLM spend, summed from the backend's usage events. */
-export interface AgentUsage { costUSD: number; tokensIn: number; tokensOut: number; model?: string; }
+export interface AgentUsage { costUSD: number; tokensIn: number; tokensOut: number; cacheRead: number; cacheWrite: number; model?: string; }
 
 interface ParseCallbacks {
   onLine?: (msg: string) => void;
@@ -76,7 +76,7 @@ interface ParseCallbacks {
   onBeat?: () => void;
 }
 
-interface TokenState { model?: string; tokensIn: number; tokensOut: number; costUSD: number; }
+interface TokenState { model?: string; tokensIn: number; tokensOut: number; cacheRead: number; cacheWrite: number; costUSD: number; }
 
 /** Apply one normalized event (logging, progress, usage accounting). Backend-agnostic — each Provider maps its own
  *  stream onto NormEvent, so this is shared by the one-shot stream and the RPC driver and stays identical for both. */
@@ -99,6 +99,7 @@ function applyEvent(n: NormEvent, cb: ParseCallbacks, ts: TokenState): void {
     case "usage": {
       if (n.model) ts.model = n.model;
       ts.tokensIn += n.tokensIn; ts.tokensOut += n.tokensOut;
+      ts.cacheRead += n.cacheRead || 0; ts.cacheWrite += n.cacheWrite || 0;
       ts.costUSD = n.costCumulative ? n.costUSD : ts.costUSD + n.costUSD; // cumulative total ⇒ set, not add
       const total = ts.tokensIn + ts.tokensOut;
       const totalK = total >= 1000 ? `${(total / 1000).toFixed(1)}k` : `${total}`;
@@ -177,15 +178,15 @@ export async function runAgent(config: AgentRunConfig): Promise<void> {
 
   // Cost is accumulated ACROSS attempts (each spawn is a fresh session, so a per-attempt total is summed) and
   // reported once — a retried leaf still records its full spend, and exactly one agent-run.
-  const total: AgentUsage = { costUSD: 0, tokensIn: 0, tokensOut: 0 };
+  const total: AgentUsage = { costUSD: 0, tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0 };
   const runStart = Date.now();
   let lastCode = 1, lastStderr = "";
   try {
     for (let attempt = 0; ; attempt++) {
-      const ts: TokenState = { tokensIn: 0, tokensOut: 0, costUSD: 0 };
+      const ts: TokenState = { tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0, costUSD: 0 };
       const base = { usd: total.costUSD, tokens: total.tokensIn + total.tokensOut, runStart };
       const { code, stderr, trip } = await oneshotAttempt(config, provider, binary, args, ts, base);
-      total.costUSD += ts.costUSD; total.tokensIn += ts.tokensIn; total.tokensOut += ts.tokensOut; total.model = ts.model || total.model;
+      total.costUSD += ts.costUSD; total.tokensIn += ts.tokensIn; total.tokensOut += ts.tokensOut; total.cacheRead += ts.cacheRead; total.cacheWrite += ts.cacheWrite; total.model = ts.model || total.model;
       // A watchdog trip (idle / wall-clock / cost / token ceiling) is a hard deterministic kill — fail loud, never retry.
       if (trip) throw new Error(`Agent killed: ${trip}`);
       lastCode = code; lastStderr = stderr;
@@ -247,7 +248,7 @@ function oneshotAttempt(config: AgentRunConfig, provider: Provider, binary: stri
  * The orchestrator (not the agent) decides completion — mechanical. The process stays alive across
  * re-prompts, so the prompt cache stays hot and the agent fixes its OWN output in-context (no fresh
  * patch session, no context rebuild). A turn is one framed user message; turn-end is the provider's
- * `turn_end` NormEvent (Pi `agent_end` / Claude `result`).
+ * `turn_end` NormEvent (Pi `agent_end`).
  *
  * The validator is the caller-supplied `validate()` closure (e.g. validateSkeleton for the design agent),
  * returning error strings (empty = clean).
@@ -263,7 +264,7 @@ async function runAgentRpc(config: AgentRunConfig): Promise<void> {
     env: process.env,
   });
 
-  const ts: TokenState = { tokensIn: 0, tokensOut: 0, costUSD: 0 };
+  const ts: TokenState = { tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0, costUSD: 0 };
   let buf = "";
   let onTurnEnd: (() => void) | null = null;
   // A spawn-level failure (e.g. missing binary) emits 'error' AND 'close'; without a handler Node throws unhandled.
@@ -359,7 +360,7 @@ async function runAgentRpc(config: AgentRunConfig): Promise<void> {
     try { proc.stdin.end(); } catch { /* already closed */ }
     proc.kill("SIGTERM"); // RPC mode is a long-lived server — terminate explicitly
     await closed;
-    config.onUsage?.({ costUSD: ts.costUSD, tokensIn: ts.tokensIn, tokensOut: ts.tokensOut, model: ts.model });
+    config.onUsage?.({ costUSD: ts.costUSD, tokensIn: ts.tokensIn, tokensOut: ts.tokensOut, cacheRead: ts.cacheRead, cacheWrite: ts.cacheWrite, model: ts.model });
     if (config.logFile) appendFileSync(config.logFile, `\n[exit]\n`);
     if (stderrBuf.trim() && config.onLine) stderrBuf.trim().split("\n").slice(-3).forEach((l) => config.onLine?.(redact(`  ${l}`)));
   }
