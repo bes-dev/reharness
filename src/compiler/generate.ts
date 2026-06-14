@@ -43,6 +43,9 @@ export interface GenerateOptions {
   input: string;
   fast?: boolean;
   autoApprove?: boolean;
+  /** Opt-in cost-optimization (`--optimize`): adds judgment-floor principles to the design prompt + deterministic
+   *  optimization lints to its in-session validate loop. Default off ⇒ base compile unchanged. */
+  optimize?: boolean;
   /** Amend mode (`amend`): start from the existing pipeline, fold `input` into the PRD, and apply a minimal
    *  skeleton delta (review_prd → amend_design) instead of a from-scratch design. */
   amend?: boolean;
@@ -129,6 +132,18 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
     const { sk, errors } = parseDraft();
     return [...errors, ...(sk ? [...validateContracts(sk), ...configFlowErrors(sk)] : [])];
   };
+
+  // Cost-optimization (opt-in via --optimize): drive the skeleton to its JUDGMENT FLOOR — an LLM only at irreducible
+  // judgment (terse structured output); everything mechanical is code ($0). Principles go in the design prompt;
+  // deterministic LINTS join its in-session validate loop so design fixes itself toward the floor (no rewriter agent).
+  const optimizeNote = opts.optimize
+    ? `\n\nCOST-OPTIMIZE for runtime inference — drive the pipeline to its JUDGMENT FLOOR:\n` +
+      `- A stage is an \`agent\` ONLY if it carries irreducible JUDGMENT (a decision a deterministic function couldn't make). ` +
+      `Everything mechanical — list, parse, aggregate, merge, count, sort, format, render, route, validate, persist — is a \`code\` state ($0 at runtime).\n` +
+      `- Aggregation / consolidation / report-RENDERING of upstream outputs is CODE, never an agent (an agent re-serialising another agent's output is the #1 wasted cost).\n` +
+      `- Every agent emits a TERSE STRUCTURED output (e.g. JSON records {…}), NOT prose/markdown — a downstream code state renders the human report for $0. Output tokens are the dominant cost.\n` +
+      `- One agent per irreducible judgment: never split one judgment across agents (each re-pays context); parallelise independent judgments instead.`
+    : "";
 
   return definePipeline({
     config: { target, input: opts.input, fast, autoApprove, amend: !!opts.amend, name: opts.name ?? "", command: opts.command ?? "", session: !!opts.session, harness: opts.harness ?? "" },
@@ -399,7 +414,7 @@ export function buildGeneratePipeline(opts: GenerateOptions): Pipeline {
           await c.agent("design",
             `Design the FSM that implements the approved PRD at ${PRD}: choose the stages, wire them into a valid graph, ` +
             `and give every agent/code/interactive state a behavioural <contract> (CDATA) describing what it does. ` +
-            `Write the whole skeleton to ${DRAFT}. Do NOT declare data flow — the compiler derives it from the graph.${siblingsNote}`,
+            `Write the whole skeleton to ${DRAFT}. Do NOT declare data flow — the compiler derives it from the graph.${siblingsNote}${optimizeNote}`,
             { append: "_fsm-syntax", validate: contractErrors });
         },
         on: "construct",

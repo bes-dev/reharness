@@ -23,7 +23,7 @@ const VERSION: string = (() => {
 /** Parsed flags. Verb handlers read what they need from this bag. */
 interface Opts {
   piModel?: string; provider?: string; name?: string; fromSession?: string; fromHarness?: string; out?: string;
-  autoApprove: boolean; resume: boolean; fast: boolean; noEnhance: boolean; evolveAfter: boolean; html: boolean; dryRun: boolean;
+  autoApprove: boolean; resume: boolean; fast: boolean; noEnhance: boolean; optimize: boolean; evolveAfter: boolean; html: boolean; dryRun: boolean;
   flagParams: Record<string, number>; fileParams: Record<string, number>; // --param wins over a --params profile
 }
 
@@ -34,7 +34,7 @@ interface Verb {
 
 const VERBS: Verb[] = [
   { name: "compile", usage: "<description>", desc: "compile a new workflow from a description (approval checkpoint; --auto-approve / --from-session)",
-    run: (rest, cwd, o, overrides) => runCompile({ cwd, input: rest.join(" "), autoApprove: o.autoApprove, piModel: o.piModel, fast: o.fast, noEnhance: o.noEnhance, name: o.name, fromSession: o.fromSession, fromHarness: o.fromHarness, overrides, provider: o.provider }) },
+    run: (rest, cwd, o, overrides) => runCompile({ cwd, input: rest.join(" "), autoApprove: o.autoApprove, piModel: o.piModel, fast: o.fast, noEnhance: o.noEnhance, optimize: o.optimize, name: o.name, fromSession: o.fromSession, fromHarness: o.fromHarness, overrides, provider: o.provider }) },
   { name: "amend", usage: "[<command>] <request>", desc: "amend a compiled command with a new feature (name the command if several)",
     run: (rest, cwd, o, overrides) => runAmend({ cwd, input: rest.join(" "), autoApprove: o.autoApprove, piModel: o.piModel, fast: o.fast, noEnhance: o.noEnhance, overrides, provider: o.provider }) },
   { name: "evolve", usage: "[<command>]", desc: "learn from the last run: self-heal failures, amortize routines into tools, refine skills",
@@ -60,6 +60,7 @@ const OPTIONS: Opt[] = [
   { names: ["--resume"], desc: "resume the latest interrupted run", apply: (o) => { o.resume = true; } },
   { names: ["--fast", "--no-research"], desc: "skip web research in compile/amend", apply: (o) => { o.fast = true; } },
   { names: ["--no-enhance"], desc: "skip the auto-chained enhance layer after compile/amend", apply: (o) => { o.noEnhance = true; } },
+  { names: ["--optimize"], desc: "cost-aware compile: drive the pipeline to its judgment floor (mechanical→code, terse structured output)", apply: (o) => { o.optimize = true; } },
   { names: ["--evolve"], desc: "after running a command, auto-chain evolve on its verdict", apply: (o) => { o.evolveAfter = true; } },
   { names: ["--dry-run"], desc: "run a command WITHOUT spawning agents/shells — smoke-test routing & data flow (no tokens)", apply: (o) => { o.dryRun = true; } },
   { names: ["--html"], desc: "graph: emit a self-contained interactive viewer instead of Mermaid", apply: (o) => { o.html = true; } },
@@ -73,7 +74,7 @@ if (args.includes("--version") || args.includes("-v")) { console.log(VERSION); p
 if (args.includes("--help") || args.includes("-h")) { printUsage(); process.exit(0); }
 
 async function main() {
-  const o: Opts = { autoApprove: false, resume: false, fast: false, noEnhance: false, evolveAfter: false, html: false, dryRun: false, flagParams: {}, fileParams: {} };
+  const o: Opts = { autoApprove: false, resume: false, fast: false, noEnhance: false, optimize: false, evolveAfter: false, html: false, dryRun: false, flagParams: {}, fileParams: {} };
   const rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const opt = OPTIONS.find(x => x.names.includes(args[i]));

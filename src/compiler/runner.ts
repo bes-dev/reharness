@@ -18,6 +18,8 @@ export interface RunGenerateOptions {
   piModel?: string;
   fast?: boolean;
   noEnhance?: boolean;
+  /** Opt-in cost-optimization pass: cost-aware design + optimization lints (drive to the judgment floor). */
+  optimize?: boolean;
   amend?: boolean;
   /** User-chosen command name (`--name`, compile only). Overrides the auto-derived skeleton id. */
   name?: string;
