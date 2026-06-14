@@ -124,17 +124,18 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
     // site falls back to the compiled value when unset. Validated up-front (fail-loud) so a bad override never
     // reaches the loop — in particular a loop `max` override stays a finite integer ≥1 (the termination invariant).
     const overrides = opts.overrides || {};
-    const param = (st: string, knob: "max" | "concurrency" | "timeoutMs" | "idleMs" | "maxMs" | "maxUsd" | "maxTokens"): number | undefined => overrides[`${st}.${knob}`];
+    const param = (st: string, knob: "max" | "concurrency" | "timeoutMs" | "idleMs" | "maxMs" | "maxUsd" | "maxTokens" | "prime"): number | undefined => overrides[`${st}.${knob}`];
     for (const key of Object.keys(overrides)) {
       const dot = key.lastIndexOf(".");
       const st = dot > 0 ? (def.states as Record<string, any>)[key.slice(0, dot)] : undefined;
       const knob = key.slice(dot + 1), v = overrides[key];
       const bad =
         !st ? `no such state "${key.slice(0, dot)}"`
-        : !["max", "concurrency", "timeoutMs", "idleMs", "maxMs", "maxUsd", "maxTokens"].includes(knob) ? `unknown knob "${knob}" (max | concurrency | timeoutMs | idleMs | maxMs | maxUsd | maxTokens)`
+        : !["max", "concurrency", "timeoutMs", "idleMs", "maxMs", "maxUsd", "maxTokens", "prime"].includes(knob) ? `unknown knob "${knob}" (max | concurrency | timeoutMs | idleMs | maxMs | maxUsd | maxTokens | prime)`
         : typeof v !== "number" || !Number.isFinite(v) || v <= 0 ? `must be a positive number, got ${v}`
         : knob === "max" && (st.type !== "loop" || !Number.isInteger(v)) ? `loop 'max' needs an integer ≥1 on a loop state`
         : knob === "concurrency" && (st.type !== "parallel" || !Number.isInteger(v)) ? `'concurrency' needs an integer ≥1 on a parallel state`
+        : knob === "prime" && st.type !== "parallel" ? `'prime' applies only to a parallel state (1 = warm the branch's shared prompt-cache prefix once before fan-out)`
         : "";
       if (bad) { emit(`✗ invalid --param ${key}: ${bad}`); return "error"; }
     }
@@ -426,6 +427,32 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
 
       async function worker(): Promise<void> {
         while (cursor < items.length) await runBranch(cursor++);
+      }
+
+      // OPT-IN prompt-cache priming (`--param <name>.prime 1`). A COLD parallel RACES: every branch fires at once
+      // on a never-seen prefix, so each re-WRITES the SHARED prefix (system prompt + skills) — measured N× cacheWrite,
+      // the dominant fan-out overspend. One lightweight warm-up call processes that prefix once; the branches then
+      // REUSE it (cacheRead, cheap). Input-side CSE — the dual of render-once (output-side). Only an agent branch with
+      // ≥2 instances benefits; the prime is semantically transparent (caching never changes output) and non-fatal
+      // (on failure the pool just cold-races as before). The branch's harness (prompt + skills) is the cached prefix.
+      // Detect an AGENT branch by the presence of a prompt file (compiled agent states carry no `type` field — only
+      // structural states do — but an agent leaf has a SYSTEM.md whereas a code branch does not). resolvePrompt throws
+      // when none exists, so the try/catch both classifies the branch and yields the prefix file to warm.
+      let branchPrompt: string | null = null;
+      try { branchPrompt = resolvePrompt(agentsDir, state.branch); } catch { branchPrompt = null; }
+      if ((param(name, "prime") ?? 0) > 0 && items.length >= 2 && branchPrompt && !sig?.aborted) {
+        try {
+          const primeDir = resolve(runDir, TRACE_DIR); mkdirSync(primeDir, { recursive: true });
+          const harness = loadHarness(agentsDir, state.branch);
+          emit(`▷ priming prompt-cache for '${state.branch}' (warm shared prefix once → ${items.length} branches reuse it)`);
+          await runAgent({
+            prompt: branchPrompt, task: "Respond with exactly: ready", cwd,
+            onLine: () => {}, onStatus: () => {}, provider, logFile: resolve(primeDir, `prime-${state.branch}.md`),
+            piBinary, piModel: harness.model || piModel, signal: sig, skills: harness.skills,
+            idleMs: AGENT_IDLE_MS || undefined, maxMs: AGENT_MAX_MS || undefined,
+            onUsage: (u) => { usage.costUSD += u.costUSD; usage.tokensIn += u.tokensIn; usage.tokensOut += u.tokensOut; usage.cacheRead += u.cacheRead; usage.cacheWrite += u.cacheWrite; usage.agentRuns += 1; },
+          });
+        } catch (e: any) { emit(`⚠ cache prime for '${state.branch}' failed (${e.message}) — continuing without warm-up`); }
       }
 
       await Promise.all(Array.from({ length: Math.min(cap, items.length) }, () => worker()));
