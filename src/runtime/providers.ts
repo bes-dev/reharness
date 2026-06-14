@@ -18,7 +18,9 @@ export type NormEvent =
   | { kind: "thinking"; text: string }
   // `costCumulative`: the backend reports a running session total (Claude `result`), not a per-message delta — set,
   // don't add, so a multi-turn RPC session isn't double-counted. Tokens are always per-message deltas (summed).
-  | { kind: "usage"; model?: string; tokensIn: number; tokensOut: number; costUSD: number; costCumulative?: boolean }
+  // tokensIn/Out = UNCACHED input / output. cacheRead/cacheWrite = cached-input read / cache-creation tokens —
+  // the bulk of input under prompt caching (omitting them undercounts input ~30×). costUSD is the cache-discounted $.
+  | { kind: "usage"; model?: string; tokensIn: number; tokensOut: number; cacheRead?: number; cacheWrite?: number; costUSD: number; costCumulative?: boolean }
   | { kind: "turn_end" };
 
 export interface Provider {
@@ -65,7 +67,7 @@ export const piProvider: Provider = {
       out.push({ kind: "tool_end", name: e.toolName, error: e.isError ? (e.result?.content?.[0]?.text || "") : undefined });
     } else if (e.type === "message_end" && e.message?.role === "assistant") {
       const m = e.message;
-      if (m.usage) out.push({ kind: "usage", model: m.model, tokensIn: m.usage.input || 0, tokensOut: m.usage.output || 0, costUSD: m.usage.cost?.total || 0 });
+      if (m.usage) out.push({ kind: "usage", model: m.model, tokensIn: m.usage.input || 0, tokensOut: m.usage.output || 0, cacheRead: m.usage.cacheRead || 0, cacheWrite: m.usage.cacheWrite || 0, costUSD: m.usage.cost?.total || 0 });
       for (const c of m.content || []) {
         if (c.type === "thinking" && c.thinking) out.push({ kind: "thinking", text: c.thinking });
         if (c.type === "text" && c.text) out.push({ kind: "text", text: c.text });
@@ -112,7 +114,7 @@ export const claudeProvider: Provider = {
         if (c.type === "thinking" && c.thinking) out.push({ kind: "thinking", text: c.thinking });
         if (c.type === "text" && c.text) out.push({ kind: "text", text: c.text });
       }
-      if (m.usage) out.push({ kind: "usage", model: m.model, tokensIn: m.usage.input_tokens || 0, tokensOut: m.usage.output_tokens || 0, costUSD: 0 });
+      if (m.usage) out.push({ kind: "usage", model: m.model, tokensIn: m.usage.input_tokens || 0, tokensOut: m.usage.output_tokens || 0, cacheRead: m.usage.cache_read_input_tokens || 0, cacheWrite: m.usage.cache_creation_input_tokens || 0, costUSD: 0 });
     } else if (e.type === "result") {
       out.push({ kind: "usage", tokensIn: 0, tokensOut: 0, costUSD: e.total_cost_usd || 0, costCumulative: true });
       out.push({ kind: "turn_end" });

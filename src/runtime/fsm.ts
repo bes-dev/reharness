@@ -118,7 +118,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
     let current = def.initial;
     let stepCounter = 0;
     const warnings: { stage: string; message: string }[] = []; // c.warn → persisted in the verdict (degradations)
-    const usage = { costUSD: 0, tokensIn: 0, tokensOut: 0, agentRuns: 0 }; // actual LLM spend, summed per agent leaf
+    const usage = { costUSD: 0, tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0, agentRuns: 0 }; // actual LLM spend, summed per agent leaf (tokensIn = UNCACHED input; cacheRead/Write = the cached bulk)
 
     // Per-run hyperparameter overrides: a flat `state.knob → value` map (CLI `--param`). A knob read at its use
     // site falls back to the compiled value when unset. Validated up-front (fail-loud) so a bad override never
@@ -233,7 +233,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
         skills: merge(harness.skills, o?.skills), extensions: merge(harness.extensions, o?.extensions),
         idleMs: knob("idleMs", AGENT_IDLE_MS), maxMs: knob("maxMs", AGENT_MAX_MS),
         maxUsd: knob("maxUsd", AGENT_MAX_USD), maxTokens: knob("maxTokens", AGENT_MAX_TOKENS),
-        onUsage: (u) => { usage.costUSD += u.costUSD; usage.tokensIn += u.tokensIn; usage.tokensOut += u.tokensOut; usage.agentRuns += 1; },
+        onUsage: (u) => { usage.costUSD += u.costUSD; usage.tokensIn += u.tokensIn; usage.tokensOut += u.tokensOut; usage.cacheRead += u.cacheRead; usage.cacheWrite += u.cacheWrite; usage.agentRuns += 1; },
       });
       emit(`✓ ${name}`);
     }
@@ -659,8 +659,12 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
           emit(`  run dir: ${runDir}`);
         }
         // Surface the run's actual LLM spend (0 for a fully-deterministic pipeline — the amortization signal).
-        const tk = usage.tokensIn + usage.tokensOut;
-        emit(`runtime: ${usage.agentRuns} agent run(s) · ${tk >= 1000 ? (tk / 1000).toFixed(1) + "k" : tk} tokens · $${usage.costUSD.toFixed(4)}`);
+        // Total = ALL tokens the model processed (uncached in + out + cache read + cache write) — the true work,
+        // not just uncached input (which alone undercounts ~30× under prompt caching). Cost is the cache-discounted $.
+        const tk = usage.tokensIn + usage.tokensOut + usage.cacheRead + usage.cacheWrite;
+        const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + "k" : `${n}`;
+        const cache = usage.cacheRead + usage.cacheWrite;
+        emit(`runtime: ${usage.agentRuns} agent run(s) · ${fmt(tk)} tokens (out ${fmt(usage.tokensOut)}${cache ? `, cached ${fmt(cache)}` : ""}) · $${usage.costUSD.toFixed(4)}`);
         // Persist the verdict so `evolve` can read it from disk (current is about to become "__done__").
         const argv = Array.isArray((def.config as any).__argv) ? (def.config as any).__argv as string[] : undefined;
         save(runDir, { ...snapshot(current), current: "__done__", status: state.status, failedStage: state.status === "error" ? cameFrom : undefined, argv, warnings: warnings.length ? warnings : undefined, usage });

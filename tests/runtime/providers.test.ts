@@ -55,16 +55,16 @@ test("pi normalize: tool/usage/text/turn-end; acks ⇒ nothing", () => {
   assert.deepEqual(piProvider.normalize({ type: "tool_execution_start", toolName: "Read", args: { path: "/f" } }), [{ kind: "tool_start", name: "Read", detail: "/f" }]);
   assert.deepEqual(piProvider.normalize({ type: "agent_end" }), [{ kind: "turn_end" }]);
   assert.deepEqual(piProvider.normalize({ type: "response" }), []); // RPC ack
-  const me = piProvider.normalize({ type: "message_end", message: { role: "assistant", model: "m", usage: { input: 10, output: 5, cost: { total: 0.01 } }, content: [{ type: "text", text: "hi" }] } });
-  assert.deepEqual(me, [{ kind: "usage", model: "m", tokensIn: 10, tokensOut: 5, costUSD: 0.01 }, { kind: "text", text: "hi" }]);
+  const me = piProvider.normalize({ type: "message_end", message: { role: "assistant", model: "m", usage: { input: 10, output: 5, cacheRead: 100, cacheWrite: 200, cost: { total: 0.01 } }, content: [{ type: "text", text: "hi" }] } });
+  assert.deepEqual(me, [{ kind: "usage", model: "m", tokensIn: 10, tokensOut: 5, cacheRead: 100, cacheWrite: 200, costUSD: 0.01 }, { kind: "text", text: "hi" }]);
 });
 
 test("claude normalize: assistant(tool/text/usage) + result(cumulative cost + turn-end)", () => {
-  const asst = claudeProvider.normalize({ type: "assistant", message: { model: "claude-x", content: [{ type: "tool_use", name: "Bash", input: { command: "ls" } }, { type: "text", text: "ok" }], usage: { input_tokens: 20, output_tokens: 7 } } });
+  const asst = claudeProvider.normalize({ type: "assistant", message: { model: "claude-x", content: [{ type: "tool_use", name: "Bash", input: { command: "ls" } }, { type: "text", text: "ok" }], usage: { input_tokens: 20, output_tokens: 7, cache_read_input_tokens: 50, cache_creation_input_tokens: 30 } } });
   assert.deepEqual(asst, [
     { kind: "tool_start", name: "Bash", detail: "ls" },
     { kind: "text", text: "ok" },
-    { kind: "usage", model: "claude-x", tokensIn: 20, tokensOut: 7, costUSD: 0 },
+    { kind: "usage", model: "claude-x", tokensIn: 20, tokensOut: 7, cacheRead: 50, cacheWrite: 30, costUSD: 0 },
   ]);
   const res = claudeProvider.normalize({ type: "result", total_cost_usd: 0.5 });
   assert.deepEqual(res, [{ kind: "usage", tokensIn: 0, tokensOut: 0, costUSD: 0.5, costCumulative: true }, { kind: "turn_end" }]);
