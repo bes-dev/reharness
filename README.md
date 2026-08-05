@@ -14,11 +14,13 @@ npm install -g reharness
 
 Package: **[npmjs.com/package/reharness](https://www.npmjs.com/package/reharness)**.
 
-reharness runs its agent leaves on the **Pi** backend — install it and put it on `PATH`:
+reharness runs its agent leaves on an agent backend — install the one you'll use and put it on `PATH` (Pi is the default):
 
-- **Pi** — the minimalist agent CLI (`pi`). See [pi-mono](https://github.com/badlogic/pi-mono).
+- **Pi** — the minimalist agent CLI (`pi`). See [pi-mono](https://github.com/badlogic/pi-mono): `npm i -g @mariozechner/pi-coding-agent`
+- **OpenCode** (`opencode`) — `npm i -g opencode-ai` (see [opencode.ai](https://opencode.ai/docs/))
+- **Hermes** (`hermes`, NousResearch [hermes-agent](https://github.com/NousResearch/hermes-agent)) — `curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`
 
-Provide model/API auth as `pi` expects. Node ≥ 18.
+Provide model/API auth as the chosen backend expects. Node ≥ 18.
 
 ## Quick Start
 
@@ -171,11 +173,25 @@ flowchart TD
 
 ### Backends (providers)
 
-The agent leaves run on the **Pi** backend; the FSM/compiler are provider-agnostic (a leaf is just "someone runs it").
-The backend is a single adapter in `src/runtime/providers.ts` (argv lowering of the three harness axes + event-stream
-normalization + RPC turn-framing + synthesized-tool rendering), so adding another backend is one Provider, not a
-cross-cutting change. Select with `--provider`, `def.provider`, or `REHARNESS_PROVIDER` (today: `pi`). `--model` /
-`def.piModel` choose the model within the backend.
+The FSM/compiler are provider-agnostic (a leaf is just "someone runs it"). The backend is a single adapter in
+`src/runtime/providers.ts` (argv lowering of the three harness axes + event-stream normalization + RPC turn-framing
++ synthesized-tool rendering), so adding another backend is one Provider, not a cross-cutting change. Registered
+backends and their run-mode support:
+
+| Backend | `--provider` | install | oneshot | interactive | RPC (leaves with `validate`) |
+|---|---|---|---|---|---|
+| Pi (default) | `pi` | `npm i -g @mariozechner/pi-coding-agent` | ✓ | ✓ | ✓ |
+| OpenCode | `opencode` | `npm i -g opencode-ai` | ✓ | ✓ | ✓ (process-per-turn session continue) |
+| Hermes | `hermes` | hermes-agent install script | ✓ | ✓ | ✗ — a `validate` leaf fails loud pre-spawn |
+
+Select with `--provider <id>`, `def.provider`, or `REHARNESS_PROVIDER`. `--model` / `def.model` choose the model
+within the backend (`def.piModel` / `def.piBinary` remain accepted as legacy aliases — resolution is
+`model ?? piModel`, `binary ?? piBinary`; the neutral names win when both are set).
+
+Limitations by backend: Hermes headless emits no live event stream (source-verified) — its token/cost spend is
+harvested after exit from its `--usage-file` report, never estimated; its leaves have no extension axis (a
+harness.json `extensions` entry degrades with a loud warning instead of silently dropping). OpenCode's RPC drives
+one *continued* session across fresh spawns (`run --session <id>`) rather than a long-lived stdin server.
 
 ### Tuning hyperparameters
 

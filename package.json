@@ -1,6 +1,6 @@
 {
   "name": "reharness",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "A reasoning compiler — turn a natural-language request or a recorded agent trace into a deterministic FSM pipeline, with model judgment only at the leaves.",
   "keywords": [
     "reasoning-compiler",

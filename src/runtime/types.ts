@@ -139,6 +139,10 @@ export interface PipelineDefinition<C extends Record<string, any> = Record<strin
   agents?: string;
   cwd?: string;
   logsDir?: string;
+  /** Backend-native model id for agent leaves. Precedence: `model ?? piModel` (`piModel` = legacy Pi-era alias). */
+  model?: string;
+  /** Override the backend executable. Precedence: `binary ?? piBinary` (`piBinary` = legacy Pi-era alias). */
+  binary?: string;
   piBinary?: string;
   piModel?: string;
   /** Backend the agent leaves run on (default: "pi"). Overridden per-run by RunOptions.provider. */
@@ -167,6 +171,8 @@ export interface RunOptions {
   data?: Record<string, any>;
   signal?: AbortSignal;
   onStatus?: (text: string) => void;
+  /** Backend-native model id for this run's agent leaves. Precedence over def.model/def.piModel; `piModel` = legacy alias. CLI: `--model`. */
+  model?: string;
   piModel?: string;
   approvalHandler?: ApprovalHandler;
   /** Auto-resolve approval states via their auto-event. */

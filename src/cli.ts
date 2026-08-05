@@ -51,7 +51,7 @@ interface Opt { names: string[]; arg?: string; desc: string; apply: (o: Opts, v:
 
 const OPTIONS: Opt[] = [
   { names: ["--model"], arg: "<id>", desc: "LLM model (e.g. anthropic/claude-sonnet-4-6)", apply: (o, v) => { o.piModel = v; } },
-  { names: ["--provider"], arg: "<id>", desc: "agent backend (default: pi)", apply: (o, v) => { o.provider = v; } },
+  { names: ["--provider"], arg: "<id>", desc: "agent backend: pi | opencode | hermes (default: pi; hermes is oneshot/interactive only)", apply: (o, v) => { o.provider = v; } },
   { names: ["--name"], arg: "<name>", desc: "name the compiled command yourself (compile only; default: auto-derived)", apply: (o, v) => { o.name = v; } },
   { names: ["--from-session"], arg: "<path>", desc: "compile from a recorded session file/dir (with compile)", apply: (o, v) => { o.fromSession = v; } },
   { names: ["--from-harness"], arg: "<dir>", desc: "compile from an existing harness/implementation directory (research explores it in place)", apply: (o, v) => { o.fromHarness = v; } },
