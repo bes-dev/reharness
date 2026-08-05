@@ -1,16 +1,15 @@
 import { spawn } from "child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
-import { dirname, join } from "path";
+import { appendFileSync, mkdirSync, writeFileSync } from "fs";
+import { dirname } from "path";
 import type { Readable } from "stream";
-import { piProvider, type Provider, type NormEvent, type PromptInput } from "./providers.js";
+import { piProvider, type Provider, type NormEvent, type AgentMode } from "./providers.js";
 import { redact } from "./redact.js";
 import { AGENT_RETRIES, AGENT_BACKOFF_MS } from "../config.js";
 
 /** Map a raw spawn failure to an actionable message — a missing backend binary is the #1 first-run stumble. */
 function spawnError(provider: Provider, binary: string, e: any): Error {
   if (e?.code === "ENOENT")
-    return new Error(`Backend '${provider.name}' not found: '${binary}' is not on PATH.${provider.installHint ? ` Install it: ${provider.installHint}.` : ""} Or pass an absolute path via --binary/def.binary.`);
+    return new Error(`Backend '${provider.name}' not found: '${binary}' is not on PATH. Install it (\`${provider.install}\`) or pass an absolute path via --binary/def.binary.`);
   return e instanceof Error ? e : new Error(String(e));
 }
 
@@ -71,6 +70,11 @@ export interface AgentRunConfig {
   /** Called once the agent finishes with its total LLM spend (summed from usage events) — the runtime
    *  aggregates these into the run's cost. A code state never calls this, so a 0-agent pipeline records $0. */
   onUsage?: (u: AgentUsage) => void;
+  /** Resume an existing backend session instead of starting fresh (`session: "resume"` providers only). Set by the
+   *  resume driver between turns; a direct caller can set it to continue a prior leaf's session. */
+  sessionId?: string;
+  /** Backend reported its session id — the resume driver captures this to re-attach on the next turn. */
+  onSession?: (id: string) => void;
 }
 
 /** Per-agent LLM spend, summed from the backend's usage events. */
@@ -82,32 +86,35 @@ interface ParseCallbacks {
   logFile?: string;
   /** Watchdog heartbeat: called on every stream chunk so the idle timer treats any backend output as "alive". */
   onBeat?: () => void;
-  /** The leaf's run config, handed to provider.normalize (a provider may stash per-run artifacts, e.g. opencode's rpc session id). */
-  runConfig?: AgentRunConfig;
+  /** Backend minted/reported a session id — captured so a `session: "resume"` provider can re-attach next turn. */
+  onSession?: (id: string) => void;
 }
 
 interface TokenState { model?: string; tokensIn: number; tokensOut: number; cacheRead: number; cacheWrite: number; costUSD: number; }
 
+/** Fresh per-attempt accounting, seeded with the requested model. The seed matters for backends whose usage events
+ *  carry no model id (OpenCode's `step-finish` has none, and `--format json` omits the `message.updated` line that
+ *  would): without it the status line and the run ledger would show a blank model. A backend that DOES report one
+ *  overwrites the seed (`applyEvent`), so a server-side model substitution is still reflected. */
+function freshTokenState(config: AgentRunConfig): TokenState {
+  return { model: config.model ?? config.piModel, tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0, costUSD: 0 };
+}
+
 /** Resolve the backend's executable + the system-prompt input. `config.prompt` is a file PATH; content is read
  *  lazily — only providers that lower the prompt themselves (opencode/hermes) ask for `content`, via promptText. */
-function resolveBackend(config: AgentRunConfig): { provider: Provider; binary: string; prompt: PromptInput } {
+function resolveBackend(config: AgentRunConfig): { provider: Provider; binary: string; prompt: { path: string } } {
   const provider = config.provider || piProvider;
   const binary = config.binary ?? config.piBinary ?? provider.binary;
   return { provider, binary, prompt: { path: config.prompt } };
 }
 
 /** Read the system-prompt file once, memoized on the PromptInput (a provider lowering prompt text calls this). */
-export function promptText(prompt: PromptInput): string {
-  return prompt.content ??= readFileSync(prompt.path!, "utf-8");
+export function promptText(prompt: { path?: string; content?: string }): string {
+  if (prompt.content !== undefined) return prompt.content;
+  return prompt.content = readFileSync(prompt.path!, "utf-8");
 }
 
-/** Give a provider that declares `prepare` a per-leaf scratch dir (`<tmp>/reharness-<name>-XXXXXX`) and let it
- *  lay down its plumbing (agent definitions / context files) before argv is built. */
-function prepareProvider(config: AgentRunConfig, provider: Provider, prompt: PromptInput): void {
-  if (!provider.prepare) return;
-  config.providerScratchDir ??= mkdtempSync(join(tmpdir(), `reharness-${provider.name}-`));
-  provider.prepare(config.providerScratchDir, config, prompt);
-}
+import { readFileSync } from "fs";
 
 /** A provider without `extensionArgs` has no extension axis at all: the leaf's extensions degrade loudly. */
 function lowerExtensions(config: AgentRunConfig, provider: Provider): string[] {
@@ -116,6 +123,16 @@ function lowerExtensions(config: AgentRunConfig, provider: Provider): string[] {
   if (provider.extensionArgs) return provider.extensionArgs(exts, config);
   config.onLine?.(`  ⚠ backend '${provider.name}' has no extension mechanism — ${exts.length} extension(s) not loaded: ${exts.map((e) => e.split("/").pop()).join(", ")}`);
   return [];
+}
+
+/** Warn once per run about an axis this backend can't honor, so a silently-dropped capability is never invisible. */
+function warnUnsupported(provider: Provider, config: AgentRunConfig): void {
+  if ((config.extensions?.length ?? 0) > 0 && provider.renderTool("x.routine.mjs").length === 0) {
+    const names = config.extensions!.map((e) => e.split("/").pop()).join(", ");
+    const msg = `  ⚠ backend '${provider.name}' cannot load synthesized tools — ${config.extensions!.length} extension(s) NOT bound for this leaf: ${names}`;
+    config.onLine?.(msg);
+    if (config.logFile) appendFileSync(config.logFile, `[warn] ${msg.trim()}\n`);
+  }
 }
 
 /** Apply one normalized event (logging, progress, usage accounting). Backend-agnostic — each Provider maps its own
@@ -146,6 +163,10 @@ function applyEvent(n: NormEvent, cb: ParseCallbacks, ts: TokenState): void {
       cb.onStatus?.(`${ts.model || "agent"} · ${totalK} tokens`);
       break;
     }
+    case "session":
+      // Reported repeatedly (every OpenCode event carries sessionID) — the callback dedupes/keeps the first.
+      cb.onSession?.(n.id);
+      break;
     case "turn_end": break; // the RPC driver watches for this; one-shot reads to EOF
   }
 }
@@ -162,10 +183,22 @@ function parseJsonEventStream(stream: Readable, provider: Provider, cb: ParseCal
         if (!raw.trim()) continue;
         let e: any;
         try { e = JSON.parse(raw); } catch { continue; }
-        for (const n of provider.normalize(e, cb.runConfig)) applyEvent(n, cb, ts);
+        for (const n of provider.normalize(e)) applyEvent(n, cb, ts);
       }
     });
     stream.on("end", () => res());
+    stream.on("error", () => res());
+  });
+}
+
+/** Read a stdout stream that carries no events — the whole text IS the assistant's answer (Hermes oneshot).
+ *  Emitted as one `text` event at end-of-stream so the log/UI shape matches a JSON backend's final message. */
+function parseTextStream(stream: Readable, cb: ParseCallbacks, ts: TokenState): Promise<void> {
+  return new Promise((res) => {
+    let buf = "";
+    stream.on("data", (chunk: Buffer | string) => { cb.onBeat?.(); buf += chunk.toString(); });
+    const done = () => { if (buf.trim()) applyEvent({ kind: "text", text: buf.trim() }, cb, ts); res(); };
+    stream.on("end", done);
     stream.on("error", () => res());
   });
 }
@@ -210,10 +243,22 @@ export async function runAgent(config: AgentRunConfig): Promise<void> {
     writeFileSync(config.logFile, redact(`# Agent: ${config.prompt}\n# Task:\n${config.task}\n\n---\n\n`));
   }
 
-  if (config.validate) return runAgentRpc(config);
+  const activeProvider = config.provider || piProvider;
+  warnUnsupported(activeProvider, config);
+
+  // Multi-turn strategy is the provider's, not the driver's. "stdin" keeps Pi's one-live-process RPC protocol;
+  // "resume" re-spawns per turn against a captured session id; "none" cannot self-correct in-session at all, so the
+  // validator is run once after a plain one-shot and a failure is loud (never a silent pass).
+  if (config.validate) {
+    const mode = activeProvider.session ?? "stdin";
+    if (mode === "stdin") return runAgentRpc(config);
+    if (mode === "resume") return runAgentResume(config);
+  }
+  // Falling through with a validator set means the backend declared `session: "none"` — no in-session fix path exists,
+  // so the validator runs ONCE after a successful one-shot and a failure throws. Never a silent pass.
+  const checkOnce = config.validate;
 
   const { provider, binary, prompt } = resolveBackend(config);
-  prepareProvider(config, provider, prompt);
   const extArgs = lowerExtensions(config, provider);
   const args = [...provider.args("oneshot", config, prompt, config.task), ...extArgs];
 
@@ -224,18 +269,25 @@ export async function runAgent(config: AgentRunConfig): Promise<void> {
   let lastCode = 1, lastStderr = "";
   try {
     for (let attempt = 0; ; attempt++) {
-      const ts: TokenState = { tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0, costUSD: 0 };
+      const ts: TokenState = freshTokenState(config);
       const base = { usd: total.costUSD, tokens: total.tokensIn + total.tokensOut, runStart };
-      const { code, stderr, trip } = await oneshotAttempt(config, provider, binary, args, ts, base);
-      // A provider with out-of-band usage (hermes --usage-file): harvest it after the attempt — a retried
-      // attempt's spend still lands, exactly once per attempt (a stream-emitting provider returns [] here).
-      if (provider.finalize) for (const n of provider.finalize(config)) applyEvent(n, { onLine: config.onLine, onStatus: config.onStatus, logFile: config.logFile }, ts);
+      const { code, stderr, trip } = await oneshotAttempt(config, provider, binary, args, ts, base, config.sessionId, config.onSession);
       total.costUSD += ts.costUSD; total.tokensIn += ts.tokensIn; total.tokensOut += ts.tokensOut; total.cacheRead += ts.cacheRead; total.cacheWrite += ts.cacheWrite; total.model = ts.model || total.model;
       // A watchdog trip (idle / wall-clock / cost / token ceiling) is a hard deterministic kill — fail loud, never retry.
       if (trip) throw new Error(`Agent killed: ${trip}`);
       lastCode = code; lastStderr = stderr;
       if (config.signal?.aborted) throw new Error("Aborted");
-      if (code === 0) return;
+      if (code === 0) {
+        if (checkOnce) {
+          const errs = await checkOnce();
+          if (errs.length) {
+            if (config.logFile) appendFileSync(config.logFile, `[validate] FAIL (no in-session fix path):\n- ${errs.join("\n- ")}\n`);
+            throw new Error(`Validation failed and backend '${provider.name}' cannot self-correct in-session: ${errs.join("; ")}`);
+          }
+          if (config.logFile) appendFileSync(config.logFile, `[validate] OK\n`);
+        }
+        return;
+      }
       if (attempt >= AGENT_RETRIES || !isTransient(stderr)) break;
       const delay = backoffMs(attempt);
       config.onLine?.(`  ⚠ transient backend failure (exit ${code}); retrying ${attempt + 1}/${AGENT_RETRIES} in ${(delay / 1000).toFixed(1)}s`);
@@ -249,11 +301,26 @@ export async function runAgent(config: AgentRunConfig): Promise<void> {
   }
 }
 
+/** Run a provider's `prepare` hook (if any) and fold the result into spawn options. A provider without the hook
+ *  yields inherited env and no cleanup — byte-identical to the pre-`prepare` spawn, so Pi is unaffected. */
+function stage(provider: Provider, mode: AgentMode, config: AgentRunConfig, sessionId?: string): { env: NodeJS.ProcessEnv; extraArgs: string[]; cleanup: () => void; collectUsage?: () => NormEvent[] } {
+  const p = provider.prepare?.(mode, config, { path: config.prompt }, sessionId);
+  return {
+    env: p?.env ? { ...process.env, ...p.env } : process.env,
+    extraArgs: p?.extraArgs ?? [],
+    cleanup: () => { try { p?.cleanup?.(); } catch { /* cleanup must never mask the run's outcome */ } },
+    collectUsage: p?.collectUsage,
+  };
+}
+
 /** One one-shot spawn. Resolves with the exit code + collected stderr (never rejects on a non-zero exit — the
  *  caller decides retry-or-fail); rejects only on a spawn-level error (e.g. binary not found, mapped to a clear msg). */
-function oneshotAttempt(config: AgentRunConfig, provider: Provider, binary: string, args: string[], ts: TokenState, base: { usd: number; tokens: number; runStart: number }): Promise<{ code: number; stderr: string; trip?: string }> {
+function oneshotAttempt(config: AgentRunConfig, provider: Provider, binary: string, args: string[], ts: TokenState, base: { usd: number; tokens: number; runStart: number }, sessionId?: string, onSession?: (id: string) => void): Promise<{ code: number; stderr: string; trip?: string }> {
   return new Promise((res, rej) => {
-    const proc = spawn(binary, args, { cwd: provider.cwd?.(config, { path: config.prompt }) ?? config.cwd, stdio: ["ignore", "pipe", "pipe"], env: process.env });
+    // Stage provider side-channel state (config dir / env-borne prompt / usage file) for THIS attempt. Each retry
+    // re-stages, so a scratch dir never leaks across attempts.
+    const st = stage(provider, "oneshot", config, sessionId);
+    const proc = spawn(binary, [...args, ...st.extraArgs], { cwd: provider.cwd?.(config, { path: config.prompt }) ?? config.cwd, stdio: ["ignore", "pipe", "pipe"], env: st.env });
     let trip: string | undefined;
     const onAbort = () => { if (config.logFile) appendFileSync(config.logFile, `\n[aborted]\n`); proc.kill("SIGTERM"); };
     config.signal?.addEventListener("abort", onAbort, { once: true });
@@ -264,7 +331,10 @@ function oneshotAttempt(config: AgentRunConfig, provider: Provider, binary: stri
       if (config.logFile) appendFileSync(config.logFile, `\n[watchdog] ${reason}\n`);
     });
 
-    const parsed = parseJsonEventStream(proc.stdout, provider, { onLine: config.onLine, onStatus: config.onStatus, logFile: config.logFile, onBeat: wd.kick, runConfig: config }, ts);
+    const cb: ParseCallbacks = { onLine: config.onLine, onStatus: config.onStatus, logFile: config.logFile, onBeat: wd.kick, onSession };
+    const parsed = provider.stream === "text"
+      ? parseTextStream(proc.stdout, cb, ts)
+      : parseJsonEventStream(proc.stdout, provider, cb, ts);
     let stderrBuf = "";
     proc.stderr.on("data", (chunk: Buffer) => {
       wd.kick();
@@ -277,10 +347,14 @@ function oneshotAttempt(config: AgentRunConfig, provider: Provider, binary: stri
       wd.disarm();
       config.signal?.removeEventListener("abort", onAbort);
       await parsed;
+      // Backends that don't stream usage wrote it to a file (Hermes --usage-file, written even on failure) — book it
+      // before cleanup removes the scratch dir, so spend is accounted even on a non-zero exit.
+      for (const n of st.collectUsage?.() ?? []) applyEvent(n, cb, ts);
+      st.cleanup();
       if (config.logFile) appendFileSync(config.logFile, `\n[exit] code=${code ?? 1}\n`);
       res({ code: code ?? 1, stderr: stderrBuf, trip });
     });
-    proc.on("error", (e) => { wd.disarm(); config.signal?.removeEventListener("abort", onAbort); rej(spawnError(provider, binary, e)); });
+    proc.on("error", (e) => { wd.disarm(); config.signal?.removeEventListener("abort", onAbort); st.cleanup(); rej(spawnError(provider, binary, e)); });
   });
 }
 
@@ -298,32 +372,18 @@ function oneshotAttempt(config: AgentRunConfig, provider: Provider, binary: stri
  * returning error strings (empty = clean).
  */
 async function runAgentRpc(config: AgentRunConfig): Promise<void> {
-  // A backend without RPC support (hermes) fails LOUD before anything is read or spawned — the redirect names a
-  // backend that does support the validator flow.
-  const declared = (config.provider || piProvider).modes;
-  if (declared && !declared.includes("rpc")) {
-    throw new Error(`Backend '${(config.provider || piProvider).name}' does not support RPC/validation mode (supported: ${declared.join(", ")}). Use --provider pi or opencode for leaves with validate.`);
-  }
-
   const { provider, binary, prompt } = resolveBackend(config);
 
-  prepareProvider(config, provider, prompt);
-
-  // Two RPC styles behind one contract: stream events in, turn_end out. A persistent provider (Pi's --mode rpc)
-  // keeps ONE process alive and takes framed turns on stdin; OpenCode has no stdin protocol, so each turn is a
-  // FRESH `run` spawn that --continue's the SAME captured session (context survives; the process model stays
-  // uniform — every spawn/parses/kills the watchdog the same way). Provider marks itself via `rpcStyle`.
-  if (provider.rpcStyle === "process-per-turn") return runAgentRpcProcessPerTurn(config, provider, binary, prompt);
-
+  const st = stage(provider, "rpc", config);
   const args = provider.args("rpc", config, prompt, config.task);
 
-  const proc = spawn(binary, args, {
+  const proc = spawn(binary, [...args, ...st.extraArgs], {
     cwd: provider.cwd?.(config, prompt) ?? config.cwd,
     stdio: ["pipe", "pipe", "pipe"],
-    env: process.env,
+    env: st.env as Record<string, string>,
   });
 
-  const ts: TokenState = { tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0, costUSD: 0 };
+  const ts: TokenState = freshTokenState(config);
   let buf = "";
   let onTurnEnd: (() => void) | null = null;
   // A spawn-level failure (e.g. missing binary) emits 'error' AND 'close'; without a handler Node throws unhandled.
@@ -350,7 +410,7 @@ async function runAgentRpc(config: AgentRunConfig): Promise<void> {
       if (!raw.trim()) continue;
       let e: any;
       try { e = JSON.parse(raw); } catch { continue; }
-      for (const n of provider.normalize(e, config)) {
+      for (const n of provider.normalize(e)) {
         applyEvent(n, config, ts);
         if (n.kind === "turn_end") { const r = onTurnEnd; onTurnEnd = null; r?.(); }
       }
@@ -416,6 +476,7 @@ async function runAgentRpc(config: AgentRunConfig): Promise<void> {
   } finally {
     wd.disarm();
     config.signal?.removeEventListener("abort", onAbort);
+    st.cleanup();
     try { proc.stdin.end(); } catch { /* already closed */ }
     proc.kill("SIGTERM"); // RPC mode is a long-lived server — terminate explicitly
     await closed;
@@ -426,46 +487,70 @@ async function runAgentRpc(config: AgentRunConfig): Promise<void> {
 }
 
 /**
- * RPC for a provider with no stdin session protocol (OpenCode): each turn is a FRESH `run` spawn, continuing the
- * session id the first spawn created (context survives — same conversation, same files). Each attempt reuses the
- * one-shot spawn machinery exactly (same stream parsing, watchdog, finalize), and the provider's args() adds
- * `--continue --session <id>` once the first turn's stream has revealed the id. A turn's end-of-stream IS the
- * turn end (the process exits), so no turn-marker event is needed.
+ * In-session validation for backends with NO stdin turn protocol (`session: "resume"` — OpenCode).
+ *
+ * Same contract as runAgentRpc — the orchestrator decides completion, the agent fixes its OWN output — but the
+ * mechanism differs: one spawn PER turn, each re-attaching to the session id the backend reported on turn 1
+ * (OpenCode `--session <id>` from its event stream). The agent's context therefore carries across re-prompts
+ * exactly as in RPC mode; what's lost is the hot process (each turn pays process startup), which is why "stdin"
+ * stays the preferred strategy where a backend offers it.
+ *
+ * Spend is summed across turns and reported once, so a re-prompted leaf records its full cost and one agent-run.
  */
-async function runAgentRpcProcessPerTurn(config: AgentRunConfig, provider: Provider, binary: string, prompt: PromptInput): Promise<void> {
-  const runValidate = async (): Promise<string[]> => (config.validate ? await config.validate() : []);
-  const maxAttempts = 3;
-  const total: AgentUsage = { costUSD: 0, tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0 };
+async function runAgentResume(config: AgentRunConfig): Promise<void> {
+  const provider = config.provider || piProvider;
+  const binary = config.binary ?? config.piBinary ?? provider.binary;
 
-  const oneTurn = async (task: string): Promise<void> => {
-    if (config.signal?.aborted) throw new Error("Aborted");
-    const args = provider.args("rpc", config, prompt, task); // args() continues the session after turn 1
-    const ts: TokenState = { tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0, costUSD: 0 };
-    const base = { usd: total.costUSD, tokens: total.tokensIn + total.tokensOut, runStart: Date.now() };
-    const { code, stderr, trip } = await oneshotAttempt(config, provider, binary, args, ts, base);
-    if (provider.finalize) for (const n of provider.finalize(config)) applyEvent(n, config, ts);
-    total.costUSD += ts.costUSD; total.tokensIn += ts.tokensIn; total.tokensOut += ts.tokensOut; total.cacheRead += ts.cacheRead; total.cacheWrite += ts.cacheWrite; total.model = ts.model || total.model;
-    if (trip) throw new Error(`Agent killed: ${trip}`);
-    if (config.signal?.aborted) throw new Error("Aborted");
-    if (code !== 0) {
-      if (stderr.trim()) stderr.trim().split("\n").slice(-3).forEach((l) => config.onLine?.(redact(`  ${l}`)));
-      throw new Error(`Agent failed (exit ${code})`);
+  const total: AgentUsage = { costUSD: 0, tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0 };
+  const runStart = Date.now();
+  let sessionId: string | undefined = config.sessionId;
+  const onSession = (id: string) => { if (!sessionId) sessionId = id; };
+
+  /** One turn = one spawn. `message` becomes the task argv for this spawn; turn-end is process exit. */
+  const turn = async (message: string): Promise<void> => {
+    const ts: TokenState = freshTokenState(config);
+    const base = { usd: total.costUSD, tokens: total.tokensIn + total.tokensOut, runStart };
+    const turnCfg: AgentRunConfig = { ...config, task: message, sessionId, onSession };
+    const { provider: p, prompt } = resolveBackend(turnCfg);
+    const extArgs = lowerExtensions(turnCfg, p);
+    const args = [...p.args("oneshot", turnCfg, prompt, message), ...extArgs];
+    try {
+      const { code, stderr, trip } = await oneshotAttempt(turnCfg, p, binary, args, ts, base, sessionId, onSession);
+      if (trip) throw new Error(`Agent killed: ${trip}`);
+      if (config.signal?.aborted) throw new Error("Aborted");
+      if (code !== 0) {
+        if (stderr.trim()) stderr.trim().split("\n").slice(-3).forEach((l) => config.onLine?.(redact(`  ${l}`)));
+        throw new Error(`Agent failed (exit ${code})`);
+      }
+    } finally {
+      total.costUSD += ts.costUSD; total.tokensIn += ts.tokensIn; total.tokensOut += ts.tokensOut;
+      total.cacheRead += ts.cacheRead; total.cacheWrite += ts.cacheWrite; total.model = ts.model || total.model;
     }
   };
 
   try {
-    await oneTurn(config.task);
-    let errs = await runValidate();
+    await turn(config.task);
+    if (!sessionId) {
+      // Without a session id turn 2 would start a FRESH context — the agent would be "fixing" output it can't see.
+      // Fail loud rather than silently degrade the self-correction contract.
+      const errs0 = config.validate ? await config.validate() : [];
+      if (!errs0.length) return;
+      throw new Error(`Validation failed and backend '${provider.name}' reported no session id to resume: ${errs0.join("; ")}`);
+    }
+
+    let errs = config.validate ? await config.validate() : [];
     let attempts = 0;
+    const maxAttempts = 3;
     while (errs.length && attempts < maxAttempts) {
       config.onLine?.(`  ⚠ validation: ${errs[0]} — re-prompting (${attempts + 1}/${maxAttempts})`);
       if (config.logFile) appendFileSync(config.logFile, `[validate] FAIL:\n- ${errs.join("\n- ")}\n`);
-      await oneTurn(`Your output failed validation:\n- ${errs.join("\n- ")}\n\nFix this now and finish — edit only what's needed to resolve the above.`);
-      errs = await runValidate();
+      await turn(`Your output failed validation:\n- ${errs.join("\n- ")}\n\nFix this now and finish — edit only what's needed to resolve the above.`);
+      errs = config.validate ? await config.validate() : [];
       attempts++;
     }
+
     if (errs.length) {
-      if (config.logFile) appendFileSync(config.logFile, `[validate] GIVE UP after ${attempts} attempt(s):\n- ${errs.join("; ")}\n`);
+      if (config.logFile) appendFileSync(config.logFile, `[validate] GIVE UP after ${attempts} attempt(s):\n- ${errs.join("\n- ")}\n`);
       throw new Error(`Validation not satisfied after ${attempts} attempt(s): ${errs.join("; ")}`);
     }
     if (attempts > 0) config.onLine?.(`  ✓ validation passed (${attempts} fix round(s))`);
@@ -483,23 +568,24 @@ export async function runInteractive(config: AgentRunConfig): Promise<void> {
   if (config.signal?.aborted) throw new Error("Aborted");
 
   const { provider, binary, prompt } = resolveBackend(config);
-  prepareProvider(config, provider, prompt);
+  const st = stage(provider, "interactive", config);
   const extArgs = lowerExtensions(config, provider);
   const args = [...provider.args("interactive", config, prompt, config.task), ...extArgs];
 
   const exitCode: number = await new Promise((res, rej) => {
-    const proc = spawn(binary, args, {
+    const proc = spawn(binary, [...args, ...st.extraArgs], {
       cwd: provider.cwd?.(config, prompt) ?? config.cwd,
       stdio: "inherit",
-      env: process.env,
+      env: st.env,
     });
     const onAbort = () => proc.kill("SIGTERM");
     config.signal?.addEventListener("abort", onAbort, { once: true });
     proc.on("close", (code) => {
       config.signal?.removeEventListener("abort", onAbort);
+      st.cleanup();
       res(code ?? 1);
     });
-    proc.on("error", (e) => rej(spawnError(provider, binary, e)));
+    proc.on("error", (e) => { st.cleanup(); rej(spawnError(provider, binary, e)); });
   });
 
   if (config.signal?.aborted) throw new Error("Aborted");

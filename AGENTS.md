@@ -134,11 +134,11 @@ width, correction-retry budget, shell timeout, …) live in `src/config.ts`, eac
 `src/runtime/providers.ts` (argv lowering of the three axes + event-stream normalization + RPC turn-framing), so a new
 backend is one Provider, not a cross-cutting change. `--model` / `def.model` choose the model within the backend
 (`def.piModel`/`def.piBinary` remain accepted as legacy aliases; resolution is `model ?? piModel`, `binary ?? piBinary`
-— the neutral name wins when both are set). Mode support: pi/opencode support all three run modes (oneshot, RPC for
-`validate` leaves, interactive); **hermes is oneshot/interactive only** — a `validate` leaf assigned to it fails loud
-pre-spawn with a redirect. Hermes's headless mode emits no live event stream (its spend is read post-exit from its
-`--usage-file`, never estimated) and has no extension axis (a harness.json `extensions` entry degrades with a loud
-warning, never silently dropped).
+— the neutral name wins when both are set). Session strategy: pi/opencode support all three run modes (oneshot, RPC for
+`validate` leaves, interactive); **hermes is oneshot/interactive only** — a `validate` leaf assigned to it runs the
+validator ONCE after a one-shot and a failure is loud (never a silent pass). Hermes's headless mode emits no live event
+stream (its spend is read post-exit from its `--usage-file`, never estimated) and has no extension axis (a harness.json
+`extensions` entry degrades with a loud warning, never silently dropped).
 
 ## State Context API
 

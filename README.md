@@ -180,9 +180,9 @@ backends and their run-mode support:
 
 | Backend | `--provider` | install | oneshot | interactive | RPC (leaves with `validate`) |
 |---|---|---|---|---|---|
-| Pi (default) | `pi` | `npm i -g @mariozechner/pi-coding-agent` | ✓ | ✓ | ✓ |
-| OpenCode | `opencode` | `npm i -g opencode-ai` | ✓ | ✓ | ✓ (process-per-turn session continue) |
-| Hermes | `hermes` | hermes-agent install script | ✓ | ✓ | ✗ — a `validate` leaf fails loud pre-spawn |
+| Pi (default) | `pi` | `npm i -g @mariozechner/pi-coding-agent` | ✓ | ✓ | ✓ (stdin session protocol) |
+| OpenCode | `opencode` | `npm i -g opencode-ai` | ✓ | ✓ | ✓ (process-per-turn session resume) |
+| Hermes | `hermes` | hermes-agent install script | ✓ | ✓ | ✗ — validator runs once after one-shot, failure is loud |
 
 Select with `--provider <id>`, `def.provider`, or `REHARNESS_PROVIDER`. `--model` / `def.model` choose the model
 within the backend (`def.piModel` / `def.piBinary` remain accepted as legacy aliases — resolution is
