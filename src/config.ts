@@ -19,9 +19,9 @@ const num0 = (envVar: string, def: number): number => {
 const str = (envVar: string, def: string): string => process.env[envVar] || def;
 
 // ── runtime ────────────────────────────────────────────────────────────────
-/** Default backend the agent leaves run on (registered: "pi" | "opencode" | "hermes"). Per-pipeline
+/** Default backend the agent leaves run on (registered: "pi" | "opencode"). Per-pipeline
  *  (def.provider) and per-run (--provider) override this; a new backend is added as one Provider in
- *  runtime/providers.ts. Note "hermes" supports oneshot/interactive leaves only (validate runs once after one-shot). */
+ *  runtime/providers.ts. */
 export const PROVIDER = str("REHARNESS_PROVIDER", "pi");
 /** Hard cap on a single `c.shell(...)` command — a hung shell must not hang the run. */
 export const SHELL_TIMEOUT_MS = num("REHARNESS_SHELL_TIMEOUT_MS", 120_000);

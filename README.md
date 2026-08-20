@@ -18,7 +18,6 @@ reharness runs its agent leaves on an agent backend — install the one you'll u
 
 - **Pi** — the minimalist agent CLI (`pi`). See [pi-mono](https://github.com/badlogic/pi-mono): `npm i -g @mariozechner/pi-coding-agent`
 - **OpenCode** (`opencode`) — `npm i -g opencode-ai` (see [opencode.ai](https://opencode.ai/docs/))
-- **Hermes** (`hermes`, NousResearch [hermes-agent](https://github.com/NousResearch/hermes-agent)) — `curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`
 
 Provide model/API auth as the chosen backend expects. Node ≥ 18.
 
@@ -182,16 +181,16 @@ backends and their run-mode support:
 |---|---|---|---|---|---|
 | Pi (default) | `pi` | `npm i -g @mariozechner/pi-coding-agent` | ✓ | ✓ | ✓ (stdin session protocol) |
 | OpenCode | `opencode` | `npm i -g opencode-ai` | ✓ | ✓ | ✓ (process-per-turn session resume) |
-| Hermes | `hermes` | hermes-agent install script | ✓ | ✓ | ✗ — validator runs once after one-shot, failure is loud |
 
 Select with `--provider <id>`, `def.provider`, or `REHARNESS_PROVIDER`. `--model` / `def.model` choose the model
 within the backend (`def.piModel` / `def.piBinary` remain accepted as legacy aliases — resolution is
 `model ?? piModel`, `binary ?? piBinary`; the neutral names win when both are set).
 
-Limitations by backend: Hermes headless emits no live event stream (source-verified) — its token/cost spend is
-harvested after exit from its `--usage-file` report, never estimated; its leaves have no extension axis (a
-harness.json `extensions` entry degrades with a loud warning instead of silently dropping). OpenCode's RPC drives
-one *continued* session across fresh spawns (`run --session <id>`) rather than a long-lived stdin server.
+Limitations by backend: OpenCode's RPC drives one *continued* session across fresh spawns
+(`run --session <id>`) rather than a long-lived stdin server. OpenCode fires a background
+`npm install @opencode-ai/plugin` into each config dir it loads and awaits it when a custom tool is present, so
+the first OpenCode leaf with tools makes a network call and can fail offline; the config dir is content-keyed and
+reused (cold install once, warm thereafter) under the bundle's `.cache/`.
 
 ### Tuning hyperparameters
 

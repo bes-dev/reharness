@@ -3,6 +3,31 @@
 All notable changes to reharness are documented here. This project adheres to [Semantic Versioning](https://semver.org/);
 while `0.x`, the runtime/compiler API may change between minor versions.
 
+## Unreleased
+
+### Added
+- **OpenCode backend** (`--provider opencode`): a second agent backend alongside Pi. OpenCode has no
+  `--system-prompt` flag, so the system prompt is routed through a generated agent config with `{file:...}`
+  substitution; custom tools are staged as globbed `tool/*.js` shims; `--auto` is required because headless
+  `opencode run` auto-rejects every permission request without it. Multi-turn validation uses session resume
+  (`run --session <id>`) — one spawn per turn re-attaching to the session id from turn 1.
+
+### Changed
+- **Provider seam widened** to admit backends that aren't Pi-shaped: `prepare()` stages scratch config dirs +
+  env vars + cwd before the spawn; `session` declares the multi-turn strategy ("stdin" for Pi, "resume" for
+  OpenCode); `Prepared.cwd` returns the spawn's cwd from `prepare()` (not a `Provider.cwd()` hook + mutated
+  config field, which was unsafe under parallel fan-out where branch configs share an object graph).
+- **Model/binary aliases resolved once at the `fsm.ts` boundary**: `model ?? piModel`, `binary ?? piBinary`.
+  The CLI `--model` now sets the neutral `model` field (not `piModel`); `piModel`/`piBinary` remain accepted
+  as legacy aliases in `PipelineDefinition` and `RunOptions` for backward compatibility.
+- **One validation loop, two transports**: `driveValidation` extracts the shared policy (re-prompt wording,
+  attempt counter, log lines, give-up error) so stdin (Pi) and resume (OpenCode) share one implementation.
+- **Extension degradation is one mechanism**: `lowerExtensions` warns only when a provider has no
+  `extensionArgs` at all; OpenCode declares `extensionArgs: () => []` (staging happens in `prepare`) so it
+  no longer fires a false "no extension mechanism" warning.
+- OpenCode's config dir lives under the bundle's `.cache/` (via `c.cwd`) with mode `0700`, not a
+  world-writable `/tmp` path.
+
 ## 0.1.1 — 2026-06-15
 
 Hardening & cleanup since the first release: accurate token accounting, a two-timer agent watchdog, output-side
