@@ -14,19 +14,30 @@ while `0.x`, the runtime/compiler API may change between minor versions.
 
 ### Changed
 - **Provider seam widened** to admit backends that aren't Pi-shaped: `prepare()` stages scratch config dirs +
-  env vars + cwd before the spawn; `session` declares the multi-turn strategy ("stdin" for Pi, "resume" for
-  OpenCode); `Prepared.cwd` returns the spawn's cwd from `prepare()` (not a `Provider.cwd()` hook + mutated
-  config field, which was unsafe under parallel fan-out where branch configs share an object graph).
+  env vars before the spawn; `session` declares the multi-turn strategy ("stdin" for Pi, "resume" for
+  OpenCode). `Prepared` deliberately carries NO cwd — a leaf always runs in its own workspace, and staged
+  config is routed in through env (`OPENCODE_CONFIG_DIR`), never by relocating the process. A leaf must be
+  reproducible, not cwd-dependent.
 - **Model/binary aliases resolved once at the `fsm.ts` boundary**: `model ?? piModel`, `binary ?? piBinary`.
   The CLI `--model` now sets the neutral `model` field (not `piModel`); `piModel`/`piBinary` remain accepted
-  as legacy aliases in `PipelineDefinition` and `RunOptions` for backward compatibility.
+  as legacy aliases in `PipelineDefinition` and `RunOptions` for backward compatibility — and are dropped
+  from `AgentRunConfig` (the runtime only ever sees the neutral names, so a `piModel`-only caller can no
+  longer label the run with a model the backend was never spawned with).
 - **One validation loop, two transports**: `driveValidation` extracts the shared policy (re-prompt wording,
-  attempt counter, log lines, give-up error) so stdin (Pi) and resume (OpenCode) share one implementation.
+  attempt counter, log lines, give-up error) so stdin (Pi) and resume (OpenCode) share one implementation,
+  and both drivers now call it unconditionally — the clean case is its loop-not-entered path, so a caller-
+  supplied validator runs exactly once instead of twice.
 - **Extension degradation is one mechanism**: `lowerExtensions` warns only when a provider has no
   `extensionArgs` at all; OpenCode declares `extensionArgs: () => []` (staging happens in `prepare`) so it
   no longer fires a false "no extension mechanism" warning.
-- OpenCode's config dir lives under the bundle's `.cache/` (via `c.cwd`) with mode `0700`, not a
-  world-writable `/tmp` path.
+- OpenCode's config dir is derived from `layout()` and lives under the bundle's run-exhaust
+  `<project>/reharness/.cache/opencode/` with mode `0700` (content-keyed, warm-cache reuse), not a
+  world-writable `/tmp` path — and not a top-level `.cache/` in the user's project either.
+- OpenCode's `--session <id>` is lowered in `args()` (from `c.sessionId`) BEFORE the variadic `message..`
+  positional, not appended after it via `Prepared.extraArgs` (options-after-variadic is a parser dependency).
+- The resume transport (`runAgentResume`) is covered by tests: a fake `session: "resume"` provider plus a
+  stub binary pin turn-2+ spawning with `--session`, the one-turn clean finish, the 3-attempt give-up, and
+  the no-session-id fail-loud path.
 
 ## 0.1.1 — 2026-06-15
 

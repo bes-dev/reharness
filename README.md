@@ -190,7 +190,8 @@ Limitations by backend: OpenCode's RPC drives one *continued* session across fre
 (`run --session <id>`) rather than a long-lived stdin server. OpenCode fires a background
 `npm install @opencode-ai/plugin` into each config dir it loads and awaits it when a custom tool is present, so
 the first OpenCode leaf with tools makes a network call and can fail offline; the config dir is content-keyed and
-reused (cold install once, warm thereafter) under the bundle's `.cache/`.
+reused (cold install once, warm thereafter) under the bundle's run-exhaust `reharness/.cache/opencode/` — never
+inside the user's work tree.
 
 ### Tuning hyperparameters
 

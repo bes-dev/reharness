@@ -9,13 +9,15 @@
 //
 // Two axes widen to admit backends that aren't Pi-shaped:
 //   • `prepare()` — OpenCode has no --system-prompt flag, so the prompt axis can't lower to argv.
-//     A provider gets to stage scratch files and contribute env vars + cwd before the spawn.
+//     A provider gets to stage scratch files and contribute env vars before the spawn (the leaf's cwd is
+//     never touched — staged config is routed in through env, so a leaf stays cwd-independent).
 //   • `session` — OpenCode has no stdin turn protocol, so validator-driven multi-turn is one spawn per
 //     turn resuming a captured session id.
 
 import { createHash } from "crypto";
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
+import { layout } from "../layout.js";
 import type { AgentRunConfig } from "./agent.js";
 
 export type AgentMode = "oneshot" | "rpc" | "interactive";
@@ -25,14 +27,16 @@ export type AgentMode = "oneshot" | "rpc" | "interactive";
  *  • "resume" — one spawn PER turn; turn 2+ re-attaches to the session id captured from turn 1. */
 export type SessionMode = "stdin" | "resume";
 
-/** Staged per-run side-channel state: env vars to merge into the spawn, plus a cleanup for any scratch dir. */
+/** Staged per-run side-channel state: env vars to merge into the spawn, plus a cleanup for any scratch dir.
+ *  Deliberately NO cwd — the leaf always runs in its own workspace; a provider that stages a config dir routes
+ *  it in through env (OPENCODE_CONFIG_DIR), never by relocating the process. A leaf must be reproducible, not
+ *  cwd-dependent. `cwd` can come back to this interface when a backend genuinely requires it. */
 export interface Prepared {
   env?: Record<string, string>;
-  /** Extra argv appended after `args()` — for paths only knowable after staging (e.g. a session id). */
+  /** Extra argv appended after `args()` — for values only knowable after staging. No registered provider sets
+   *  it today (it exists so one can, without a driver change). Anything that must PRECEDE a variadic positional
+   *  belongs in `args()` instead — see OpenCode's `--session` for why. */
   extraArgs?: string[];
-  /** cwd override for the spawned process (a provider that stages a config dir needs the leaf to run there).
-   *  Absent ⇒ the leaf's regular cwd. */
-  cwd?: string;
   /** Called in the driver's `finally`, always, even on abort/throw. Must never throw. */
   cleanup?: () => void;
 }
@@ -77,9 +81,10 @@ export interface Provider {
    *  the driver emits a degrade warning instead of silently dropping them. */
   extensionArgs?(extensions: string[], c: AgentRunConfig): string[];
   /** Stage per-run side-channel state (scratch config dirs, env-borne prompts) before the spawn.
-   *  Absent ⇒ nothing to stage: argv + inherited env is the whole contract (Pi). `sessionId` is set on a resume
-   *  turn so the provider can lower it to argv/env. */
-  prepare?(mode: AgentMode, c: AgentRunConfig, sessionId?: string): Prepared;
+   *  Absent ⇒ nothing to stage: argv + inherited env is the whole contract (Pi). The leaf's cwd is NOT stageable
+   *  (see `Prepared`); the config carries `sessionId` on a resume turn — lower it in `args()`, not here, so it
+   *  precedes any variadic positional. */
+  prepare?(mode: AgentMode, c: AgentRunConfig): Prepared;
 }
 
 // ── Pi (original backend) ────────────────────────────────────────────────────
@@ -185,6 +190,11 @@ export const opencodeProvider: Provider = {
     if (c.model) a.push("--model", c.model);
     a.push("--agent", OC_AGENT);
     if (mode !== "interactive") a.push("--auto"); // else every permission request is auto-rejected
+    // Session resume is lowered HERE — reading `c.sessionId`, which the resume driver sets on turn 2+ — and not
+    // via `Prepared.extraArgs`, because extraArgs land AFTER `args()` and hence after the variadic `message..`
+    // positional. Options-after-variadic is a parser dependency (yargs happens to still bind it); options-first
+    // is the CLI's own documented shape.
+    if (c.sessionId) a.push("--session", c.sessionId);
     if (mode === "interactive") { if (task) a.push("--prompt", task); }
     else a.push(task ?? "");
     return a;
@@ -226,7 +236,7 @@ export const opencodeProvider: Provider = {
   // Unused: session mode is "resume", so the driver never writes turns to stdin. Kept non-throwing to satisfy the
   // interface (a caller that ignores `session` and frames a turn anyway gets an inert object, not a crash).
   frame(message) { return { type: "prompt", message }; },
-  prepare(mode, c, sessionId) {
+  prepare(mode, c) {
     // The agent's `prompt` field takes a config-substitution reference to our prompt FILE — no flag needed.
     const agent: Record<string, unknown> = { mode: "primary", prompt: `{file:${c.prompt}}` };
     if (c.model) agent.model = c.model;
@@ -260,7 +270,10 @@ export const opencodeProvider: Provider = {
     // present. A fresh dir per attempt would make every leaf pay a cold, network-dependent install; a content-keyed
     // dir is cold once and warm thereafter, while a changed prompt/toolset still gets a new dir (no stale reuse).
     const key = createHash("sha256").update(cfgJson).update(shims.map((s) => s.name + s.content).join("\0")).digest("hex").slice(0, 16);
-    const dir = join(c.cwd, ".cache", "opencode", `reharness-oc-${key}`);
+    // Location comes from the layout module (the single source of truth for every path reharness touches), so the
+    // dir lands under the BUNDLE's run-exhaust `.cache/` — `<project>/reharness/.cache/opencode/…` — not a fresh
+    // top-level `.cache/` in the user's project (untracked noise, and `npm install` inside their work tree).
+    const dir = join(layout(c.cwd).cache, "opencode", `reharness-oc-${key}`);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     writeFileSync(join(dir, "opencode.json"), cfgJson);
     if (shims.length) {
@@ -274,10 +287,9 @@ export const opencodeProvider: Provider = {
 
     return {
       // OPENCODE_CONFIG_DIR is prepended to the config-dir search list (project config still loads and could
-      // fight our agent definition, so disable it — a leaf must be reproducible, not cwd-dependent).
+      // fight our agent definition, so disable it — a leaf must be reproducible, not cwd-dependent). The leaf
+      // still runs in its OWN cwd: the config dir is routed in via env, never by relocating the process.
       env: { OPENCODE_CONFIG_DIR: dir, OPENCODE_DISABLE_PROJECT_CONFIG: "1" },
-      extraArgs: sessionId ? ["--session", sessionId] : [],
-      cwd: dir,
       // Deliberately NOT removed: the warm `node_modules` is the point (see the hash note above). It lives under
       // the bundle's .cache/ and is keyed by content, so it is self-limiting and gitignored.
       cleanup: () => {},

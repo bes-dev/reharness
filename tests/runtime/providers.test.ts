@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, chmodSync } from "node:fs";
-import { join } from "node:path";
+import { rmSync, mkdtempSync, readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { piProvider, opencodeProvider, resolveProvider, allProviders, type Provider } from "../../src/runtime/providers.js";
@@ -26,12 +26,10 @@ test("pi oneshot: no harness ⇒ minimal spawn (backward compatible)", () => {
   assert.deepEqual(piProvider.args("oneshot", base, "do it"), ["--mode", "json", "-p", "--no-session", "--system-prompt", "/a/SYSTEM.md", "do it"]);
 });
 
-test("pi rpc/interactive use their own base flags; neutral `model` wins over the legacy `piModel` alias", () => {
+test("pi rpc/interactive use their own base flags", () => {
   assert.equal(piProvider.args("rpc", base)[1], "rpc");
   assert.ok(!piProvider.args("rpc", base).includes("do it")); // rpc feeds the task via stdin frame
   assert.deepEqual(piProvider.args("interactive", base, "do it"), ["--no-session", "--system-prompt", "/a/SYSTEM.md", "do it"]);
-  const a = piProvider.args("oneshot", { ...base, model: "n/new", piModel: "n/old" }, "t");
-  assert.deepEqual(a.filter((x, i) => a[i - 1] === "--model"), ["n/new"]);
 });
 
 test("pi extensionArgs: a synthesized routine → .pi.mjs; a plain ext passes through", () => {
@@ -74,31 +72,39 @@ test("opencode oneshot: the task IS the `run [message..]` positional", () => {
   assert.ok(!a.includes("--prompt"), "`run` has no --prompt option");
 });
 
-test("opencode: prompt/skills lower through a generated config dir, not argv", () => {
-  opencodeProvider.args("oneshot", { ...base, appendPrompt: "/a/extra.md", skills: ["/s/x"] }, "do it");
-  // The args themselves don't carry the prompt path — prepare() stages it
-  const p = opencodeProvider.prepare!("oneshot", { ...base, model: "m", appendPrompt: "/a/extra.md", skills: ["/s/x"] });
+test("opencode: prompt/skills lower through a generated config dir (routed via env — the leaf's cwd is untouched), not argv", () => {
+  // The args themselves don't carry the prompt path — prepare() stages it.
+  const a = opencodeProvider.args("oneshot", { ...base, appendPrompt: "/a/extra.md", skills: ["/s/x"] }, "do it");
+  assert.ok(!a.includes("/a/SYSTEM.md") && !a.includes("/a/extra.md"));
+  const root = mkdtempSync(join(tmpdir(), "rh-oc-cfg-"));
+  const p = opencodeProvider.prepare!("oneshot", { ...base, cwd: root, model: "m", appendPrompt: "/a/extra.md", skills: ["/s/x"] });
   const dir = p.env!.OPENCODE_CONFIG_DIR;
   assert.ok(dir && existsSync(dir));
+  // A provider must NEVER relocate the leaf: staged config is routed in through env, and `Prepared` carries no cwd.
+  assert.ok(!("cwd" in p), "Prepared must not carry a cwd — the leaf runs in its own workspace");
+  // The dir is derived from layout() and lands under the BUNDLE's run-exhaust .cache/ — never a top-level
+  // .cache/ in the user's project.
+  assert.ok(dir.startsWith(join(root, "reharness", ".cache", "opencode") + sep), `config dir misplaced: ${dir}`);
+  assert.equal(statSync(dir).mode & 0o777, 0o700, "content-keyed config dir must be 0700");
   assert.equal(p.env!.OPENCODE_DISABLE_PROJECT_CONFIG, "1");
   const cfg = JSON.parse(readFileSync(join(dir, "opencode.json"), "utf8"));
   assert.equal(cfg.agent.reharness.prompt, "{file:/a/SYSTEM.md}");
   assert.equal(cfg.agent.reharness.model, "m");
   assert.deepEqual(cfg.instructions, ["/a/extra.md", "/s/x"]);
-  assert.equal(p.cwd, dir);
   p.cleanup!();
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true });
 });
 
 test("opencode prepare: a synthesized routine becomes a globbed tool/<stem>.js shim importing the wrapper", () => {
-  const p = opencodeProvider.prepare!("oneshot", { ...base, extensions: ["/t/parse_kv.routine.mjs"] });
+  const root = mkdtempSync(join(tmpdir(), "rh-oc-shim-"));
+  const p = opencodeProvider.prepare!("oneshot", { ...base, cwd: root, extensions: ["/t/parse_kv.routine.mjs"] });
   const dir = p.env!.OPENCODE_CONFIG_DIR;
   const shim = readFileSync(join(dir, "tool", "parse_kv.js"), "utf8");
   assert.match(shim, /from "\/t\/parse_kv\.opencode\.mjs"/);
   // `type: module` disambiguates the `.js` shim — without it the tool object lands at `default.default` (CJS interop)
   assert.equal(JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).type, "module");
   p.cleanup!();
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true });
 });
 
 // The end-to-end contract: a bind-time-rendered wrapper, loaded through the staged shim the way opencode's tool
@@ -110,7 +116,8 @@ test("opencode: the staged tool shim loads via file:// import and satisfies open
     `export function run(a) { return Object.fromEntries(String(a.text).split(",").map((s) => s.split("="))); }\n`);
   for (const v of opencodeProvider.renderTool("parse_kv.routine.mjs")) writeFileSync(join(work, v.name), v.content);
 
-  const p = opencodeProvider.prepare!("oneshot", { ...base, extensions: [join(work, "parse_kv.routine.mjs")] });
+  const root = mkdtempSync(join(tmpdir(), "rh-oc-e2e-"));
+  const p = opencodeProvider.prepare!("oneshot", { ...base, cwd: root, extensions: [join(work, "parse_kv.routine.mjs")] });
   const dir = p.env!.OPENCODE_CONFIG_DIR;
   const mod = await import(pathToFileURL(join(dir, "tool", "parse_kv.js")).href);
   // opencode's guard, verbatim (packages/opencode/src/tool/registry.ts)
@@ -121,14 +128,15 @@ test("opencode: the staged tool shim loads via file:// import and satisfies open
   assert.deepEqual(Object.keys(mod.default.args), ["text"]); // JSON-Schema property map → legacyJsonSchema
   assert.equal(await mod.default.execute({ text: "a=1,b=2" }), JSON.stringify({ a: "1", b: "2" }));
   p.cleanup!();
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true });
   rmSync(work, { recursive: true, force: true });
 });
 
 // opencode fires a background `npm install @opencode-ai/plugin` into every config dir it loads and AWAITS it when a
 // custom tool is present, so the dir is content-keyed and REUSED (cold install once) rather than mkdtemp'd per run.
 test("opencode prepare: identical config ⇒ same dir (warm npm cache); changed config ⇒ a different dir", () => {
-  const cfgA = { ...base, model: "m" };
+  const root = mkdtempSync(join(tmpdir(), "rh-oc-key-"));
+  const cfgA = { ...base, cwd: root, model: "m" };
   const a1 = opencodeProvider.prepare!("oneshot", cfgA);
   const a2 = opencodeProvider.prepare!("oneshot", cfgA);
   assert.equal(a1.env!.OPENCODE_CONFIG_DIR, a2.env!.OPENCODE_CONFIG_DIR);
@@ -137,23 +145,24 @@ test("opencode prepare: identical config ⇒ same dir (warm npm cache); changed 
   // cleanup must NOT delete the dir — the warm node_modules is the point
   a1.cleanup!();
   assert.ok(existsSync(a1.env!.OPENCODE_CONFIG_DIR));
-  for (const d of [a1.env!.OPENCODE_CONFIG_DIR, b.env!.OPENCODE_CONFIG_DIR]) rmSync(d, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true });
 });
 
 test("opencode prepare: a changed toolset also re-keys the dir (no stale tool shims)", () => {
-  const p1 = opencodeProvider.prepare!("oneshot", { ...base, extensions: ["/t/a.routine.mjs"] });
-  const p2 = opencodeProvider.prepare!("oneshot", { ...base, extensions: ["/t/b.routine.mjs"] });
+  const root = mkdtempSync(join(tmpdir(), "rh-oc-key2-"));
+  const p1 = opencodeProvider.prepare!("oneshot", { ...base, cwd: root, extensions: ["/t/a.routine.mjs"] });
+  const p2 = opencodeProvider.prepare!("oneshot", { ...base, cwd: root, extensions: ["/t/b.routine.mjs"] });
   assert.notEqual(p1.env!.OPENCODE_CONFIG_DIR, p2.env!.OPENCODE_CONFIG_DIR);
-  for (const d of [p1.env!.OPENCODE_CONFIG_DIR, p2.env!.OPENCODE_CONFIG_DIR]) rmSync(d, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true });
 });
 
-test("opencode prepare: a session id lowers to --session for a resume turn", () => {
-  const fresh = opencodeProvider.prepare!("oneshot", base);
-  assert.deepEqual(fresh.extraArgs, []);
-  fresh.cleanup!();
-  const resumed = opencodeProvider.prepare!("oneshot", base, "ses_abc");
-  assert.deepEqual(resumed.extraArgs, ["--session", "ses_abc"]);
-  resumed.cleanup!();
+test("opencode args: a session id lowers to --session BEFORE the variadic task positional", () => {
+  const a = opencodeProvider.args("oneshot", { ...base, sessionId: "ses_abc" }, "do it");
+  assert.ok(a.includes("--session"), "c.sessionId must lower to --session");
+  assert.ok(a.indexOf("--session") < a.indexOf("do it"), "options must precede the variadic `message..` positional");
+  assert.ok(!a.includes("--prompt"), "`run` has no --prompt option");
+  const fresh = opencodeProvider.args("oneshot", base, "do it");
+  assert.ok(!fresh.includes("--session"), "no session id ⇒ no --session flag");
 });
 
 test("opencode normalize: sessionID reported; tool states; step_finish tokens incl. cache; text/reasoning", () => {

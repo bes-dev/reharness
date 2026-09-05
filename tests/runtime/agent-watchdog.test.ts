@@ -15,7 +15,7 @@ function fakeBin(body: string): string {
 }
 
 const run = (bin: string, wd: Partial<AgentRunConfig>) =>
-  runAgent({ prompt: "p", task: "t", cwd: tmpdir(), piBinary: bin, ...wd });
+  runAgent({ prompt: "p", task: "t", cwd: tmpdir(), binary: bin, ...wd });
 
 // A Pi usage event line worth $0.60 (message_end → normalize → usage{cost.total}).
 const USAGE = `{"type":"message_end","message":{"role":"assistant","usage":{"input":10,"output":10,"cost":{"total":0.6}}}}`;

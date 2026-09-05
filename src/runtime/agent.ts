@@ -38,14 +38,12 @@ export interface AgentRunConfig {
   logFile?: string;
   onLine?: (msg: string) => void;
   onStatus?: (text: string) => void;
-  /** Override the provider's default executable. Precedence: `binary ?? piBinary` (`piBinary` is the legacy
-   *  Pi-era name, kept as an accepted alias). */
+  /** Override the provider's default executable. */
   binary?: string;
-  piBinary?: string;
-  /** Backend-native model id (e.g. "anthropic/claude-sonnet-4-6"). Precedence: `model ?? piModel` (`piModel`
-   *  is the legacy Pi-era name, kept as an accepted alias). */
+  /** Backend-native model id (e.g. "anthropic/claude-sonnet-4-6"). The legacy Pi-era aliases (`piModel`/`piBinary`)
+   *  are accepted on `PipelineDefinition`/`RunOptions` and resolved to the neutral names ONCE at the fsm.ts
+   *  boundary — the runtime never sees them. */
   model?: string;
-  piModel?: string;
   /** Backend adapter. Absent ⇒ Pi — so direct callers and tests are unchanged. */
   provider?: Provider;
   signal?: AbortSignal;
@@ -62,7 +60,7 @@ export interface AgentRunConfig {
   /** Absolute path to a file appended to the system prompt. */
   appendPrompt?: string;
   /** Per-leaf harness (the three static axes; absent ⇒ provider defaults, identical to pre-harness spawn).
-   *  `model` is `piModel` above. See docs/design and [[tool-synthesis]] memory. */
+   *  `model` is above. See docs/design and [[tool-synthesis]] memory. */
   skills?: string[];      // knowledge/instructions injected for this leaf
   extensions?: string[];  // bound external capability, e.g. web tools
   /** Called once the agent finishes with its total LLM spend (summed from usage events) — the runtime
@@ -95,13 +93,13 @@ interface TokenState { model?: string; tokensIn: number; tokensOut: number; cach
  *  would): without it the status line and the run ledger would show a blank model. A backend that DOES report one
  *  overwrites the seed (`applyEvent`), so a server-side model substitution is still reflected. */
 function freshTokenState(config: AgentRunConfig): TokenState {
-  return { model: config.model ?? config.piModel, tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0, costUSD: 0 };
+  return { model: config.model, tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0, costUSD: 0 };
 }
 
 /** Resolve the backend's executable. */
 function resolveBackend(config: AgentRunConfig): { provider: Provider; binary: string } {
   const provider = config.provider || piProvider;
-  const binary = config.binary ?? config.piBinary ?? provider.binary;
+  const binary = config.binary ?? provider.binary;
   return { provider, binary };
 }
 
@@ -254,12 +252,11 @@ export async function runAgent(config: AgentRunConfig): Promise<void> {
 
 /** Run a provider's `prepare` hook (if any) and fold the result into spawn options. A provider without the hook
  *  yields inherited env and no cleanup — byte-identical to the pre-`prepare` spawn, so Pi is unaffected. */
-function stage(provider: Provider, mode: AgentMode, config: AgentRunConfig, sessionId?: string): { env: Record<string, string>; extraArgs: string[]; cwd: string | undefined; cleanup: () => void } {
-  const p = provider.prepare?.(mode, config, sessionId);
+function stage(provider: Provider, mode: AgentMode, config: AgentRunConfig): { env: NodeJS.ProcessEnv; extraArgs: string[]; cleanup: () => void } {
+  const p = provider.prepare?.(mode, config);
   return {
-    env: p?.env ? { ...process.env, ...p.env } as Record<string, string> : process.env as Record<string, string>,
+    env: p?.env ? { ...process.env, ...p.env } : process.env,
     extraArgs: p?.extraArgs ?? [],
-    cwd: p?.cwd,
     cleanup: () => { try { p?.cleanup?.(); } catch { /* cleanup must never mask the run's outcome */ } },
   };
 }
@@ -270,8 +267,8 @@ function oneshotAttempt(config: AgentRunConfig, provider: Provider, binary: stri
   return new Promise((res, rej) => {
     // Stage provider side-channel state (config dir / env-borne prompt) for THIS attempt. Each retry
     // re-stages, so a scratch dir never leaks across attempts.
-    const st = stage(provider, "oneshot", config, config.sessionId);
-    const proc = spawn(binary, [...args, ...st.extraArgs], { cwd: st.cwd ?? config.cwd, stdio: ["ignore", "pipe", "pipe"], env: st.env });
+    const st = stage(provider, "oneshot", config);
+    const proc = spawn(binary, [...args, ...st.extraArgs], { cwd: config.cwd, stdio: ["ignore", "pipe", "pipe"], env: st.env });
     let trip: string | undefined;
     const onAbort = () => { if (config.logFile) appendFileSync(config.logFile, `\n[aborted]\n`); proc.kill("SIGTERM"); };
     config.signal?.addEventListener("abort", onAbort, { once: true });
@@ -351,7 +348,7 @@ async function runAgentRpc(config: AgentRunConfig): Promise<void> {
   const args = [...provider.args("rpc", config), ...st.extraArgs];
 
   const proc = spawn(binary, args, {
-    cwd: st.cwd ?? config.cwd,
+    cwd: config.cwd,
     stdio: ["pipe", "pipe", "pipe"],
     env: st.env,
   });
@@ -425,19 +422,14 @@ async function runAgentRpc(config: AgentRunConfig): Promise<void> {
     send(provider.frame(config.task));
     await awaitTurn(turn);
 
-    // First validation check — if it passes, no re-prompt needed.
-    const runValidate = async (): Promise<string[]> => (config.validate ? await config.validate() : []);
-    const firstErrs = await runValidate();
-    if (firstErrs.length) {
-      // Re-prompt with errors and drive the validation loop.
-      await driveValidation(config, async (message) => {
-        turn = nextTurn();
-        send(provider.frame(message));
-        await awaitTurn(turn);
-      });
-    } else {
-      if (config.logFile) appendFileSync(config.logFile, `[validate] OK\n`);
-    }
+    // Shared validation policy, unconditionally: the clean case is its loop-not-entered path (attempts === 0,
+    // `[validate] OK` logged) — so no caller-side pre-check that would run the (possibly expensive, caller-
+    // supplied) validator twice.
+    await driveValidation(config, async (message) => {
+      turn = nextTurn();
+      send(provider.frame(message));
+      await awaitTurn(turn);
+    });
   } finally {
     wd.disarm();
     config.signal?.removeEventListener("abort", onAbort);
@@ -501,14 +493,9 @@ async function runAgentResume(config: AgentRunConfig): Promise<void> {
       throw new Error(`Validation failed and backend '${provider.name}' reported no session id to resume: ${errs0.join("; ")}`);
     }
 
-    // First validation check — if it passes, no re-prompt needed.
-    const runValidate = async (): Promise<string[]> => (config.validate ? await config.validate() : []);
-    const firstErrs = await runValidate();
-    if (firstErrs.length) {
-      await driveValidation(config, turn);
-    } else {
-      if (config.logFile) appendFileSync(config.logFile, `[validate] OK\n`);
-    }
+    // Shared validation policy, unconditionally (same rationale as runAgentRpc — the clean case is the loop's
+    // not-entered path, so the validator runs exactly once either way).
+    await driveValidation(config, turn);
   } finally {
     config.onUsage?.(total);
   }
@@ -528,7 +515,7 @@ export async function runInteractive(config: AgentRunConfig): Promise<void> {
 
   const exitCode: number = await new Promise((res, rej) => {
     const proc = spawn(binary, args, {
-      cwd: st.cwd ?? config.cwd,
+      cwd: config.cwd,
       stdio: "inherit",
       env: st.env,
     });

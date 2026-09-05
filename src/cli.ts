@@ -22,7 +22,7 @@ const VERSION: string = (() => {
 
 /** Parsed flags. Verb handlers read what they need from this bag. */
 interface Opts {
-  piModel?: string; model?: string; provider?: string; name?: string; fromSession?: string; fromHarness?: string; out?: string;
+  model?: string; provider?: string; name?: string; fromSession?: string; fromHarness?: string; out?: string;
   autoApprove: boolean; resume: boolean; fast: boolean; noEnhance: boolean; evolveAfter: boolean; html: boolean; dryRun: boolean;
   flagParams: Record<string, number>; fileParams: Record<string, number>; // --param wins over a --params profile
 }
