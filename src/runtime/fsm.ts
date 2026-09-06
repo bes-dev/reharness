@@ -106,9 +106,10 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
   async function run(emit: (msg: string) => void, opts: RunOptions = {}): Promise<"success" | "error"> {
     const signal = opts.signal;
     const onStatus = opts.onStatus || (() => {});
-    const piModel = opts.piModel || def.piModel;
+    // Backend-neutral resolution with legacy aliases: `model ?? piModel`, `binary ?? piBinary`.
+    const model = opts.model ?? opts.piModel ?? def.model ?? def.piModel;
     const provider = resolveProvider(opts.provider || def.provider || PROVIDER);
-    const piBinary = def.piBinary; // undefined ⇒ provider's default executable
+    const binary = def.binary ?? def.piBinary; // undefined ⇒ provider's default executable
     const dryRun = opts.dryRun;    // smoke mode: stub every agent/shell, exercise the graph without spending tokens
 
     const retries: Record<string, number> = {};
@@ -234,7 +235,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
       const knob = (k: "idleMs" | "maxMs" | "maxUsd" | "maxTokens", def: number) => (param(name, k) ?? o?.[k] ?? def) || undefined;
       await runAgent({
         prompt: promptFile, task: task2, cwd, onLine: emit, onStatus, provider,
-        logFile, piBinary, piModel: harness.model || o?.model || piModel, signal: sig,
+        logFile, binary, model: harness.model || o?.model || model, signal: sig,
         validate: o?.validate, appendPrompt: resolveAppend(o?.append),
         skills: merge(harness.skills, o?.skills), extensions: merge(harness.extensions, o?.extensions),
         idleMs: knob("idleMs", AGENT_IDLE_MS), maxMs: knob("maxMs", AGENT_MAX_MS),
@@ -258,7 +259,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
 
       emit(`▷ ${name} (interactive — exit the backend to continue)`);
       await runInteractive({
-        prompt: promptFile, task, cwd, piBinary, piModel: o?.model || piModel, signal: sig, provider,
+        prompt: promptFile, task, cwd, binary, model: o?.model || model, signal: sig, provider,
         appendPrompt: resolveAppend(o?.append),
       });
 
@@ -453,7 +454,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
           await runAgent({
             prompt: branchPrompt, task: "Respond with exactly: ready", cwd,
             onLine: () => {}, onStatus: () => {}, provider, logFile: resolve(primeDir, `prime-${state.branch}.md`),
-            piBinary, piModel: harness.model || piModel, signal: sig,
+            binary, model: harness.model || model, signal: sig,
             skills: harness.skills, extensions: harness.extensions, // mirror the branch's cached prefix exactly
             idleMs: AGENT_IDLE_MS || undefined, maxMs: AGENT_MAX_MS || undefined,
             onUsage: addUsage,
@@ -816,7 +817,7 @@ export function definePipeline<C extends Record<string, any>>(def: PipelineDefin
         const subEmit = (msg: string) => emit(`  [${state.skeleton}] ${msg}`);
 
         const r = await withStateTimeout(param(current, "timeoutMs") ?? state.timeoutMs, async (sig) => subPipeline.run(subEmit, {
-          signal: sig, onStatus, piModel,
+          signal: sig, onStatus, model,
           autoApprove: opts.autoApprove,
           approvalHandler: opts.approvalHandler,
         }));

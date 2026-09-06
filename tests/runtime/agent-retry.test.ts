@@ -17,7 +17,7 @@ function fakeBin(stderr: string, code: number): { bin: string; calls: () => numb
   return { bin, calls: () => (existsSync(counter) ? readFileSync(counter, "utf-8").trim().split("\n").filter(Boolean).length : 0) };
 }
 
-const run = (bin: string) => runAgent({ prompt: "p", task: "t", cwd: tmpdir(), piBinary: bin });
+const run = (bin: string) => runAgent({ prompt: "p", task: "t", cwd: tmpdir(), binary: bin });
 
 test("a transient failure (429) is retried up to the budget, then fails loud", async () => {
   const f = fakeBin("Error: 429 rate limit exceeded", 1);

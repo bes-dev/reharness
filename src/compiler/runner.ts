@@ -15,7 +15,7 @@ export interface RunGenerateOptions {
   cwd: string;
   input: string;
   autoApprove?: boolean;
-  piModel?: string;
+  model?: string;
   fast?: boolean;
   noEnhance?: boolean;
   amend?: boolean;
@@ -156,7 +156,7 @@ export async function runCompile(opts: RunGenerateOptions): Promise<number> {
     const status = await pipeline.run(emit, {
       autoApprove: opts.autoApprove,
       approvalHandler: terminalApprovalHandler,
-      piModel: opts.piModel,
+      model: opts.model,
       overrides: opts.overrides,
       provider: opts.provider,
     });
@@ -166,7 +166,7 @@ export async function runCompile(opts: RunGenerateOptions): Promise<number> {
     // Auto-chain the enhance layer as a SEPARATE gated pipeline (skippable). A failure here never invalidates
     // the verified base — compile already succeeded — so we always return 0. Scope it to the command we just
     // built (the draft scratch holds its id) so we don't disturb already-enhanced sibling commands.
-    if (!opts.fast && !opts.noEnhance) await runEnhance({ cwd: opts.cwd, piModel: opts.piModel, command: compiledCommandId(opts.cwd), provider: opts.provider });
+    if (!opts.fast && !opts.noEnhance) await runEnhance({ cwd: opts.cwd, model: opts.model, command: compiledCommandId(opts.cwd), provider: opts.provider });
     return 0;
   } catch (err: any) {
     process.stdout.write("\r\x1b[K");
@@ -183,13 +183,13 @@ function compiledCommandId(cwd: string): string {
 
 /** Run the enhance layer over an already-compiled pipeline (auto-chained after compile/amend unless --fast/--no-enhance).
  *  Not a verb — `enhance` was removed from the CLI surface; only `runCompile` chains it. */
-async function runEnhance(opts: { cwd: string; piModel?: string; command?: string; provider?: string }): Promise<number> {
+async function runEnhance(opts: { cwd: string; model?: string; command?: string; provider?: string }): Promise<number> {
   if (!existsSync(layout(opts.cwd).skeletons)) {
     console.error("No compiled pipeline here (reharness/skeletons missing). Run `reharness compile <description>` first.");
     return 1;
   }
   try {
-    const status = await buildEnhancePipeline(opts.cwd, opts.command).run(emit, { piModel: opts.piModel, provider: opts.provider });
+    const status = await buildEnhancePipeline(opts.cwd, opts.command).run(emit, { model: opts.model, provider: opts.provider });
     process.stdout.write("\r\x1b[K");
     console.log(status === "success" ? ansi.green("✓ enhance complete") : ansi.red(`✗ ${status}`));
     return status === "success" ? 0 : 1;
@@ -202,7 +202,7 @@ async function runEnhance(opts: { cwd: string; piModel?: string; command?: strin
 
 /** Run the evolve layer (v1 self-heal) over a compiled pipeline: read the last run's verdict and, if it failed,
  *  diagnose + repair the leaf; if it succeeded, report stability. The `reharness evolve` verb. */
-export async function runEvolve(opts: { cwd: string; piModel?: string; command?: string; overrides?: Record<string, number>; provider?: string }): Promise<number> {
+export async function runEvolve(opts: { cwd: string; model?: string; command?: string; overrides?: Record<string, number>; provider?: string }): Promise<number> {
   const skeletonsDir = layout(opts.cwd).skeletons;
   if (!existsSync(skeletonsDir)) {
     console.error("No compiled pipeline here (reharness/skeletons missing). Run `reharness compile <description>` first.");
@@ -213,7 +213,7 @@ export async function runEvolve(opts: { cwd: string; piModel?: string; command?:
     if (!ids.includes(opts.command)) { console.error(`Unknown command "${opts.command}". Available: ${ids.join(", ")}`); return 1; }
   }
   try {
-    const status = await buildEvolvePipeline(opts.cwd, opts.command, { provider: opts.provider, piModel: opts.piModel }).run(emit, { piModel: opts.piModel, overrides: opts.overrides, provider: opts.provider });
+    const status = await buildEvolvePipeline(opts.cwd, opts.command, { provider: opts.provider, model: opts.model }).run(emit, { model: opts.model, overrides: opts.overrides, provider: opts.provider });
     process.stdout.write("\r\x1b[K");
     console.log(status === "success" ? ansi.green("✓ evolve complete") : ansi.red(`✗ ${status}`));
     return status === "success" ? 0 : 1;

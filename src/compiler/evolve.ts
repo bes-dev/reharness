@@ -31,7 +31,7 @@ type Verdict = SavedState;
  *  - Track 1 (amortization): a successful run → refine attached skills, and extract a repeated deterministic
  *    routine into a Pi tool, gated by acquisition (verifyTool) + retention (the utility ledger).
  */
-export function buildEvolvePipeline(target: string, command = "", runOpts: { provider?: string; piModel?: string } = {}): Pipeline {
+export function buildEvolvePipeline(target: string, command = "", runOpts: { provider?: string; model?: string } = {}): Pipeline {
   const L = layout(target);
   const reharnessDir = L.root; // bundle root (kept as an alias so the ledger/tools/agents helpers below read naturally)
   const skeletonsDir = L.skeletons;
@@ -368,7 +368,7 @@ export function buildEvolvePipeline(target: string, command = "", runOpts: { pro
           c.emit(`↻ re-running '${id}' with the original args to confirm the heal…`);
           const pipeline = def.run(argv, { root: project.root, agents: project.agents, cwd: project.root });
           if (!pipeline) { c.emit("→ re-run produced no pipeline — static confirm only"); return "DONE"; }
-          const status = await pipeline.run(c.emit, { provider: runOpts.provider, piModel: runOpts.piModel }); // re-run on the SAME backend the user selected (not the default)
+          const status = await pipeline.run(c.emit, { provider: runOpts.provider, model: runOpts.model }); // re-run on the SAME backend the user selected (not the default)
           if (status === "success") { c.emit("✓ re-run succeeded — heal confirmed end-to-end"); return "DONE"; }
           c.emit("✗ re-run still fails — another heal round");
           c.retry("heal");

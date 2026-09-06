@@ -129,10 +129,17 @@ profile). They are applied at the runtime layer (`RunOptions.overrides`, keyed `
 a `max` override stays a finite integer ≥1, so the termination guarantee holds. The compiler's *own* knobs (fan-out
 width, correction-retry budget, shell timeout, …) live in `src/config.ts`, each overridable via a `REHARNESS_*` env var.
 
-**Backend (provider).** Agent leaves run on the `pi` backend (default and currently the only one). Select via
+**Backend (provider).** Agent leaves run on a registered backend: `pi` (default) or `opencode`. Select via
 `--provider`, `def.provider`, or `REHARNESS_PROVIDER`. The FSM is provider-agnostic; the backend is one adapter in
 `src/runtime/providers.ts` (argv lowering of the three axes + event-stream normalization + RPC turn-framing), so a new
-backend is one Provider, not a cross-cutting change. `--model` / `def.piModel` choose the model within the backend.
+backend is one Provider, not a cross-cutting change. `--model` / `def.model` choose the model within the backend
+(`def.piModel`/`def.piBinary` remain accepted as legacy aliases; resolution is `model ?? piModel`, `binary ?? piBinary`
+— the neutral name wins when both are set). Session strategy: pi/opencode support all three run modes (oneshot, RPC for
+`validate` leaves, interactive). OpenCode's RPC drives one *continued* session across fresh spawns
+(`run --session <id>`) rather than a long-lived stdin server. OpenCode fires a background `npm install
+@opencode-ai/plugin` into each config dir it loads and awaits it when a custom tool is present, so the first OpenCode
+leaf with tools makes a network call and can fail offline; the config dir is content-keyed and reused (cold install
+once, warm thereafter) under the bundle's `.cache/`.
 
 ## State Context API
 
